@@ -57,7 +57,8 @@ moss, lichen, bark, leaf, autumn amber and birch.
 
 ## Install
 
-1. Download `RadioScan-miyoo` from the latest [Actions build](../../actions) (or a Release) and unzip it.
+1. Download `RadioScan.zip` from the latest [Release](../../releases) (or the `RadioScan-miyoo` artifact of an
+   [Actions build](../../actions)) and unzip it.
 2. Copy the `RadioScan` folder to `/mnt/SDCARD/App/` (so you have `App/RadioScan/launch.sh`).
 3. Make sure Wi-Fi is on in OnionOS, then open **Apps → RadioScan**.
 
@@ -123,6 +124,11 @@ Keyboard on desktop, matching the Miyoo's key codes:
 | E / T | L1 / R1 |
 | Tab / Backspace | L2 / R2 |
 | R-Ctrl / Enter / Esc | SELECT / START / MENU |
+
+### Releasing
+
+Push a version tag (`git tag v0.2.0 && git push origin v0.2.0`). CI builds and tests it, then publishes a
+GitHub Release with `RadioScan.zip` attached, using the notes in `.github/release-notes.md`.
 
 ### Testing without the internet
 
