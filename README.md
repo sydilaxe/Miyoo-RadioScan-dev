@@ -62,6 +62,8 @@ moss, lichen, bark, leaf, autumn amber and birch.
 2. Copy the `RadioScan` folder to `/mnt/SDCARD/App/` (so you have `App/RadioScan/launch.sh`).
 3. Make sure Wi-Fi is on in OnionOS, then open **Apps → RadioScan**.
 
+With the card mounted on a computer, `make install SD=/path/to/card` copies the built app into `App/`.
+
 `log.txt` in the app folder records errors if something goes wrong.
 
 ## Controls
@@ -143,17 +145,20 @@ It reports level, the voice/music verdict for each stream, and DSP cost. CI runs
 
 ## Settings
 
-All parameters are saved to `settings.cfg` in the app folder. `launch.sh` has a few switches:
+All parameters are saved to `settings.cfg` in the app folder, including when OnionOS powers off.
 
-- `RS_RATE`: internal engine rate (32000 by default; 22050 saves CPU).
+`launch.sh` uses the same setup as the sibling apps HI5 and Jaffedrone, which mirror Onion's own GMU launcher.
+It stops Onion's audio server while RadioScan runs, uses Onion's MI_AO/MI_GFX-backed SDL 1.2, sets the
+performance CPU governor, and keeps the device awake. It has a few optional switches:
+
 - `RS_BUFFER`: audio buffer size (raise it to 2048 if you hear crackles).
+- `RS_RATE`: engine rate (48000 by default, the hardware's native rate; 32000 is lighter on the CPU).
 - `RS_ROTATE180`: set to 1 if the picture is upside down on your firmware.
-- `RS_AUDIOSERVER`: set to 0 to stop OnionOS's audio server while RadioScan runs, if you get no sound.
 
 ## Performance
 
-The engine runs at 32 kHz. On the desktop the full engine takes 1.3–2.5% of one 2.1 GHz Xeon core. That
-suggests roughly 10–20% of one Cortex-A7 core on the Mini Plus, plus a few percent for each MP3 decoder,
+The engine runs at 48 kHz. On the desktop the full engine takes about 2–4% of one 2.1 GHz Xeon core. That
+suggests roughly 15–30% of one Cortex-A7 core on the Mini Plus, plus a few percent for each MP3 decoder,
 leaving plenty of headroom on the dual-core chip. Denormals are flushed to zero in the audio thread so long
 reverb tails stay cheap.
 
@@ -165,8 +170,8 @@ reverb tails stay cheap.
   a replacement.
 - The voice detector uses simple speech features (pauses between syllables, fricative bursts). It works well on
   clear talk against dense music, but a sparse solo instrument or a busy talk show can fool it.
-- It hasn't been tested on real hardware yet. The audio-server handling in `launch.sh` and the screen
-  orientation are the parts most likely to need a tweak; both are switches.
+- It hasn't been tested on real hardware yet. The launcher, sample rate, screen setup and button mapping
+  follow HI5 and Jaffedrone, which do run on the Mini Plus.
 
 ## Credits
 

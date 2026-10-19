@@ -11,6 +11,7 @@
 #include <limits.h>
 #include <math.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -61,7 +62,7 @@ static int map_key(SDLKey k)
 
 static Synth *syn;
 static Stream *st[2];
-static int audio_rate = 32000;
+static int audio_rate = 48000;
 static StationList stations;
 static char app_dir[PATH_MAX], stations_path[PATH_MAX + 16], settings_path[PATH_MAX + 16];
 
@@ -1460,7 +1461,7 @@ static void write_wav_header(FILE *f, long data_bytes)
 static int offline_render(int argc, char **argv)
 {
     double secs = atof(argv[2]);
-    audio_rate = getenv("RS_RATE") ? atoi(getenv("RS_RATE")) : 32000;
+    audio_rate = getenv("RS_RATE") ? atoi(getenv("RS_RATE")) : 48000;
     syn = synth_create(audio_rate);
     st[0] = stream_create(audio_rate);
     st[1] = stream_create(audio_rate);
@@ -1523,6 +1524,9 @@ static int offline_render(int argc, char **argv)
 
 /* ================================================================== main */
 
+static volatile sig_atomic_t got_signal;
+static void on_signal(int sig) { got_signal = sig; }
+
 int main(int argc, char **argv)
 {
     resolve_paths();
@@ -1555,13 +1559,13 @@ int main(int argc, char **argv)
     }
     SDL_ShowCursor(SDL_DISABLE);
     SDL_WM_SetCaption("RadioScan", NULL);
-    video = SDL_SetVideoMode(SCREEN_W, SCREEN_H, 32, SDL_HWSURFACE | SDL_DOUBLEBUF);
+    video = SDL_SetVideoMode(SCREEN_W, SCREEN_H, 32, SDL_HWSURFACE);
     if (!video) { fprintf(stderr, "SDL_SetVideoMode: %s\n", SDL_GetError()); return 1; }
     screen = SDL_CreateRGBSurface(SDL_SWSURFACE, SCREEN_W, SCREEN_H, 32, 0x00FF0000, 0x0000FF00, 0x000000FF, 0);
     px = screen->pixels;
     pitch_px = screen->pitch / 4;
 
-    audio_rate = getenv("RS_RATE") ? atoi(getenv("RS_RATE")) : 32000;
+    audio_rate = getenv("RS_RATE") ? atoi(getenv("RS_RATE")) : 48000;
     int buffer = getenv("RS_BUFFER") ? atoi(getenv("RS_BUFFER")) : 1024;
     SDL_AudioSpec want, have;
     memset(&want, 0, sizeof want);
@@ -1571,7 +1575,7 @@ int main(int argc, char **argv)
     want.callback = audio_cb;
     int audio_ok = 0;
     if (!shot) {
-        static const int rates[] = {0, 32000, 44100, 48000};
+        static const int rates[] = {0, 48000, 44100, 32000};
         for (int i = 0; i < 4 && !audio_ok; i++) {
             want.freq = i == 0 ? audio_rate : rates[i];
             if (SDL_OpenAudio(&want, &have) == 0) { audio_ok = 1; audio_rate = have.freq; }
@@ -1612,8 +1616,11 @@ int main(int argc, char **argv)
         return 0;
     }
 
+    signal(SIGTERM, on_signal);
+    signal(SIGINT, on_signal);
+    fprintf(stderr, "radioscan: audio %s at %d Hz, %d frames/buffer\n", audio_ok ? "open" : "FAILED", audio_rate, buffer);
     ui.running = 1;
-    while (ui.running) {
+    while (ui.running && !got_signal) {
         SDL_Event e;
         Uint32 now = SDL_GetTicks();
         while (SDL_PollEvent(&e)) {

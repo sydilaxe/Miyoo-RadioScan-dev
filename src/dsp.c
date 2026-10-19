@@ -315,7 +315,7 @@ void param_format_ctx(int id, const float *params, char *buf, int n)
 
 /* ================================================================== engine */
 
-#define CAP_N (1 << 18)     /* live capture per oscillator (frames): 8 s @ 32 kHz */
+#define CAP_N (1 << 18)     /* live capture per oscillator (frames): 5.4 s @ 48 kHz */
 #define SNAP_N (1 << 17)    /* grabbed loop / wavetable (frames) */
 #define DLY_N (1 << 17)
 #define REV_N 8192

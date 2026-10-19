@@ -2,6 +2,7 @@
 #   make                 desktop build (needs SDL 1.2 dev files) -> build/desktop/radioscan
 #   make miyoo           cross build for Miyoo Mini / Mini Plus  -> build/miyoo/radioscan
 #   make package         miyoo build + dist/RadioScan.zip ready to unzip onto the SD card
+#   make install SD=/path/to/card   copy the packaged app onto a mounted OnionOS card
 #
 # For `make miyoo`, use the OnionOS / union-miyoomini toolchain (see README), or set CROSS and SYSROOT.
 
@@ -62,7 +63,14 @@ package: miyoo
 	cd dist && rm -f RadioScan.zip && zip -qr RadioScan.zip RadioScan
 	@echo "dist/RadioScan.zip ready: unzip into /mnt/SDCARD/App/ on the Miyoo"
 
+install: package
+	@test -n "$(SD)" || (echo "usage: make install SD=/path/to/mounted/sdcard" && exit 1)
+	@test -d "$(SD)/App" || (echo "$(SD)/App not found - is this the OnionOS card?" && exit 1)
+	mkdir -p "$(SD)/App/RadioScan"
+	cp -r dist/RadioScan/. "$(SD)/App/RadioScan/"
+	sync
+
 clean:
 	rm -rf build dist
 
-.PHONY: all miyoo package clean
+.PHONY: all miyoo package install clean
