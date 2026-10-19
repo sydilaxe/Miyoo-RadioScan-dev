@@ -78,3 +78,12 @@ jobs:
           RADIOSCAN_DIR=t ./build/desktop/radioscan --render 8 t/out.wav 2>&1 | tee t/log.txt
           grep -q "OSC A: voice sense .* (voice)" t/log.txt
           grep -q "OSC B: voice sense .* (music)" t/log.txt
+      - name: Wi-Fi sync test (two units on this machine)
+        run: |
+          ./build/desktop/radioscan --synctest LEAD 97 6 > lead.txt &
+          sleep 0.5
+          ./build/desktop/radioscan --synctest FOLLOW 120 5 | tee follow.txt
+          wait
+          cat lead.txt
+          grep -q "following 1" follow.txt
+          grep -q "bpm 97.0" follow.txt

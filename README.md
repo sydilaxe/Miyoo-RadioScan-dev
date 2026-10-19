@@ -36,6 +36,8 @@ rings, chance and drift keep it moving. It's designed for ambient performance an
 - **Chance:** five slow random-walk drifters, reverse-grain chance, octave jumps, pitch scatter, and dice to
   randomise the sound, the motion, or one section, or to gently mutate everything.
 - **Tap tempo** (SELECT) drives the rings, gates, arpeggiator, LFO sync and delay sync.
+- **Wi-Fi sync:** units on the same network lock tempo, bar phase and start/stop over UDP (port 5150), so
+  several Miyoos play in time. See [Wi-Fi sync](#wi-fi-sync).
 - **Stations:** 35 are preloaded and you can add more three ways:
   1. Edit `stations.txt` on the SD card (`Name|URL|voice|music|sound`).
   2. Type a URL on the on-screen keyboard (RADIO page, **Y**).
@@ -96,6 +98,28 @@ With the card mounted on a computer, `make install SD=/path/to/card` copies the 
 **RADIO page:** A sends the selected station to OSC A and B sends it to OSC B. Y adds a URL, X deletes (press
 twice), L2 sets the station's kind (voice / music / sound), and R2 scans the directory.
 
+## Wi-Fi sync
+
+RadioScan shares its clock with other units on the same Wi-Fi network that speak the same sync protocol.
+Set it under **MOTION → CLOCK → Wi-Fi Sync**:
+
+| Setting | Behavior |
+|---|---|
+| AUTO (default) | Syncs whenever another unit is around; the lowest-numbered unit leads |
+| LEAD | Always leads when present |
+| FOLLOW | Never leads; waits for a leader |
+| OFF | Runs alone and sends nothing |
+
+The leader sets the tempo; tap tempo on the leader and every follower jumps to the new downbeat. Followers
+nudge their clock speed by up to 3% to stay in phase, typically within a few milliseconds. Sync moves RadioScan's
+rhythm (rings, gates, arpeggiator, synced delay and LFO); the radio streams themselves just keep playing. If
+the leader stops its transport, followers pause their rhythm too, while the drones keep sounding.
+
+The badge next to the tempo shows the state: an empty ring while searching, then *lead* or *follow* once
+linked. Each unit sends 32 bytes ten times a second, so sync adds almost nothing on top of the two radio
+streams. All units must be on the same network, and the network must allow devices to see each other. Guest
+networks and some public Wi-Fi block this; a phone hotspot works well and also gives the radio its internet.
+
 ## Building
 
 The Miyoo build uses the OnionOS toolchain image:
@@ -141,7 +165,12 @@ Any of these builds, tests and publishes a GitHub Release with `RadioScan.zip` a
 `tools/fake_icecast.py` generates a speech-like and a music-like MP3 stream and serves them the way Icecast
 does: ICY metadata, a redirect, a `.pls` playlist, a fake directory, and optional HTTPS with a throwaway CA.
 `radioscan --render <seconds> <out.wav> [param=value ...]` runs both streams through the synth offline.
-It reports level, the voice/music verdict for each stream, and DSP cost. CI runs this on every push.
+It reports level, the voice/music verdict for each stream, and DSP cost.
+
+`radioscan --synctest LEAD|FOLLOW|AUTO [bpm] [seconds]` runs only the clock and Wi-Fi sync, then prints
+whether it found peers, who led and how far apart the units ended up. Run two or more on the same network.
+
+CI runs both on every push.
 
 ## Settings
 

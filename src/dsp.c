@@ -35,6 +35,7 @@ static const char *const lfo_shapes[] = {"SINE", "TRIANGLE", "SAW", "SQUARE", "R
 static const char *const env_amps[] = {"DRONE", "GATED", NULL};
 static const char *const arp_modes[] = {"OFF", "UP", "DOWN", "UP-DOWN", "RANDOM", "AS PLAYED", NULL};
 static const char *const offon[] = {"OFF", "ON", NULL};
+static const char *const sync_modes[] = {"OFF", "AUTO", "LEAD", "FOLLOW", NULL};
 static const char *const dests[] = {"OFF", "NOTE", "FILTER 1", "FILTER 2", "FOLD", "PITCH", "LEVEL A", "LEVEL B",
                                     "A<>B", "RING MOD", "REVERB", "DELAY", "GRAB A", "GRAB B", "HOP A", "HOP B", NULL};
 /* note values; the five-based ones (5/16, 5/8, 5 bars) are deliberate */
@@ -137,6 +138,7 @@ const ParamInfo param_info[P_COUNT] = {
     [P_ARP_RATE]      = {"arp_rate", "Arp Rate", PAGE_MOTION, 0, 14, 3, 1, 0, "", rates},
     [P_ARP_OCT]       = {"arp_oct", "Arp Octaves", PAGE_MOTION, 1, 4, 1, 1, 0, "int", NULL},
     [P_ARP_GATE]      = {"arp_gate", "Arp Gate", PAGE_MOTION, 0.05f, 1, 0.5f, 0.05f, 0, "", NULL},
+    [P_SYNC]          = {"sync", "Wi-Fi Sync", PAGE_MOTION, 0, 3, 1, 1, 0, "", sync_modes},
     [P_DRIFT]         = {"drift", "Drift", PAGE_MOTION, 0, 1, 0.25f, 0.02f, 0, "", NULL},
     [P_DRIFT_SPEED]   = {"drift_speed", "Drift Speed", PAGE_MOTION, 0.005f, 2, 0.05f, 1.12f, 1, "Hz", NULL},
     [P_REVERSE]       = {"reverse", "Reverse Chance", PAGE_MOTION, 0, 1, 0, 0.05f, 0, "", NULL},
@@ -188,7 +190,7 @@ const char *param_section(int id)
     if (id <= P_FOLD_MIX) return "FOLDER";
     if (id <= P_F2_KEYTRACK) return "FILTER 2";
     if (id <= P_E5_DECAY) return ring_names[(id - P_E1_STEPS) / RING_STRIDE];
-    if (id <= P_ARP_GATE) return "CLOCK";
+    if (id <= P_SYNC) return "CLOCK";
     if (id <= P_SCATTER) return "CHANCE";
     if (id <= P_ENV_TO_FOLD) return "VCA";
     if (id <= P_LFO_TO_AMP) return "LFO";
@@ -409,6 +411,8 @@ struct Synth {
     double ring_note_off;
     int ring_note_on;
     double beat_pos;
+    double clock_rate;    /* sync speed trim */
+    int running;          /* clock transport */
     double arp_next, arp_off;
     int arp_idx, arp_dir, arp_active;
 
@@ -504,6 +508,8 @@ Synth *synth_create(int sample_rate)
     }
     for (int r = 0; r < NUM_RINGS; r++) s->ring[r].last_step = -1;
     s->rng = 0x5eed5u;
+    s->clock_rate = 1.0;
+    s->running = 1;
     s->last_note = s->base_note = 48;
     s->pitch = 48;
     s->s_f1 = s->p[P_F1_CUTOFF];
@@ -561,6 +567,19 @@ void synth_tap_reset(Synth *s)
 }
 
 float synth_beat_phase(const Synth *s) { return (float)(s->beat_pos - floor(s->beat_pos)); }
+
+double synth_position(const Synth *s) { return s->beat_pos * 4.0; }
+
+void synth_set_position(Synth *s, double steps)
+{
+    if (steps < 0) steps = 0;
+    s->beat_pos = steps / 4.0;
+    s->arp_next = s->beat_pos;
+}
+
+void synth_set_clock_rate(Synth *s, double r) { s->clock_rate = r < 0.9 ? 0.9 : r > 1.1 ? 1.1 : r; }
+void synth_set_running(Synth *s, int on) { s->running = on; }
+int synth_running(const Synth *s) { return s->running; }
 
 void synth_grab(Synth *s, int osc)
 {
@@ -660,7 +679,8 @@ static int dice_excluded(int id)
     int o = osc_of(id);
     int f = o >= 0 ? osc_field(id) : id;
     return f == P_A_STATION || f == P_A_POOL || f == P_A_AUTOSCAN || f == P_A_FOCUS || id == P_MASTER ||
-           id == P_BPM || id == P_ROOT || id == P_REV_FREEZE || id == P_ENV_AMP || id == P_ARP_MODE;
+           id == P_BPM || id == P_ROOT || id == P_REV_FREEZE || id == P_ENV_AMP || id == P_ARP_MODE ||
+           id == P_SYNC;
 }
 
 void synth_randomize(Synth *s, const int *ids, int n, float amount)
@@ -1331,7 +1351,7 @@ void synth_process(Synth *s, const float *inA, const float *inB, float *out, int
     const float fs = s->fs;
     const float sm = 0.15f;
     const float *in[2] = {inA, inB};
-    const double beat_inc = s->p[P_BPM] / 60.0 / fs;
+    const double beat_inc = s->running ? s->p[P_BPM] / 60.0 / fs * s->clock_rate : 0.0;
 
     for (int b0 = 0; b0 < frames; b0 += BLOCK) {
         int n = frames - b0 < BLOCK ? frames - b0 : BLOCK;

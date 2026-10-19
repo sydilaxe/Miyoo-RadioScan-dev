@@ -34,7 +34,7 @@ enum {
     P_F2_MODE, P_F2_CUTOFF, P_F2_RES, P_F2_DRIVE, P_F2_KEYTRACK,
     /* MOTION: 5 Euclidean rings (ring n id = ring 1 id + n * RING_STRIDE), clock, chance */
     RING_FIELDS(1), RING_FIELDS(2), RING_FIELDS(3), RING_FIELDS(4), RING_FIELDS(5),
-    P_BPM, P_ROOT, P_SCALE, P_GLIDE, P_ARP_MODE, P_ARP_RATE, P_ARP_OCT, P_ARP_GATE,
+    P_BPM, P_ROOT, P_SCALE, P_GLIDE, P_ARP_MODE, P_ARP_RATE, P_ARP_OCT, P_ARP_GATE, P_SYNC,
     P_DRIFT, P_DRIFT_SPEED, P_REVERSE, P_OCT_JUMP, P_SCATTER,
     /* SPACE */
     P_ENV_AMP, P_ENV_ATTACK, P_ENV_DECAY, P_ENV_SUSTAIN, P_ENV_RELEASE, P_ENV_TO_F1, P_ENV_TO_F2, P_ENV_TO_FOLD,
@@ -99,6 +99,12 @@ void synth_set_base_note(Synth *s, int midi_note);     /* lowest note used by ge
 void synth_grab(Synth *s, int osc);                    /* osc: 0, 1 or -1 for both */
 void synth_tap_reset(Synth *s);                        /* restart the bar on a tap */
 float synth_beat_phase(const Synth *s);
+/* clock control for Wi-Fi sync (main thread; hold the audio lock around calls) */
+double synth_position(const Synth *s);                 /* 16th notes since the downbeat */
+void synth_set_position(Synth *s, double steps);
+void synth_set_clock_rate(Synth *s, double rate);      /* 0.9 .. 1.1 speed trim */
+void synth_set_running(Synth *s, int on);               /* clock transport: rings, gates, arp */
+int synth_running(const Synth *s);
 int synth_take_hop(Synth *s, int osc);                 /* 1 if a ring asked this oscillator to hop station */
 
 /* Dice: randomise parameters within musical ranges. amount 1 = anything goes, small = gentle mutation. */

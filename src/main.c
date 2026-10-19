@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "dsp.h"
@@ -24,6 +25,7 @@
 #include "net.h"
 #include "stations.h"
 #include "stream.h"
+#include "sync.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -462,9 +464,30 @@ static int button_note(int degree)
     return base_note() + scale_intervals((int)synth_get_param(syn, P_SCALE))[degree];
 }
 
+/* ================================================================== Wi-Fi sync */
+
+static int sc_mode(void) { return (int)synth_get_param(syn, P_SYNC); }
+static float sc_bpm(void) { return synth_get_param(syn, P_BPM); }
+static void sc_set_bpm(float b) { synth_set_param(syn, P_BPM, roundf(b * 10.0f) / 10.0f); }
+static double sc_position(void) { SDL_LockAudio(); double p = synth_position(syn); SDL_UnlockAudio(); return p; }
+static void sc_set_position(double p) { SDL_LockAudio(); synth_set_position(syn, p); SDL_UnlockAudio(); }
+static void sc_set_rate(double r) { synth_set_clock_rate(syn, r); }
+static int sc_playing(void) { return synth_running(syn); }
+static void sc_set_playing(int on) { synth_set_running(syn, on); }
+static const SyncClock sync_clock = {sc_mode, sc_bpm, sc_set_bpm, sc_position, sc_set_position,
+                                     sc_set_rate, sc_playing, sc_set_playing};
+
+static uint64_t now_us(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)(ts.tv_nsec / 1000);
+}
+
 static void tap_tempo(void)
 {
     Uint32 now = SDL_GetTicks();
+    if (sync_status()->following) { toast("following the lead unit's tempo"); return; }
     if (ui.ntaps > 0 && now - ui.taps[ui.ntaps - 1] > 2000) ui.ntaps = 0;
     if (ui.ntaps == 8) { memmove(ui.taps, ui.taps + 1, sizeof(Uint32) * 7); ui.ntaps = 7; }
     ui.taps[ui.ntaps++] = now;
@@ -761,6 +784,16 @@ static void draw_beat(int x, int y)
     char b[24];
     snprintf(b, sizeof b, "%.0f bpm", synth_get_param(syn, P_BPM));
     text(x + 14, y, b, C_DIM, 0);
+    if (sc_mode() != SYNC_OFF) { /* Wi-Fi sync: ring = searching, filled = linked */
+        const SyncStatus *ss = sync_status();
+        const char *t = ss->leading ? "lead" : ss->following ? "follow" : "sync";
+        int linked = ss->leading || ss->following;
+        int w = (int)strlen(t) * FONT_W;
+        int bx = x - w - 26;
+        if (linked) disc(bx, y + 8, 5, C_WATER);
+        else circle(bx, y + 8, 5, C_PANEL2);
+        text(bx + 10, y, t, linked ? C_WATER : C_PANEL2, 0);
+    }
 }
 
 /* voice sense as five dots: river-blue for speech, leaf for music */
@@ -1531,6 +1564,29 @@ int main(int argc, char **argv)
 {
     resolve_paths();
     if (argc >= 4 && !strcmp(argv[1], "--render")) return offline_render(argc, argv);
+    if (argc >= 2 && !strcmp(argv[1], "--synctest")) { /* --synctest LEAD|FOLLOW|AUTO [bpm] [seconds] */
+        int mode = argc > 2 && !strcmp(argv[2], "LEAD") ? SYNC_LEAD : argc > 2 && !strcmp(argv[2], "FOLLOW") ? SYNC_FOLLOW : SYNC_AUTO;
+        float bpm = argc > 3 ? (float)atof(argv[3]) : 120.0f;
+        int secs = argc > 4 ? atoi(argv[4]) : 5;
+        syn = synth_create(48000);
+        synth_set_param(syn, P_SYNC, (float)mode);
+        synth_set_param(syn, P_BPM, bpm);
+        synth_set_running(syn, mode == SYNC_LEAD);
+        sync_init(&sync_clock);
+        static float zin[2 * 480], zout[2 * 480];
+        uint64_t t0 = now_us();
+        while (now_us() - t0 < (uint64_t)secs * 1000000ULL) {
+            synth_process(syn, zin, zin, zout, 480);
+            sync_poll(now_us());
+            usleep(10000);
+        }
+        const SyncStatus *ss = sync_status();
+        printf("RADIOSCAN %s: bpm %.1f playing %d peers %d leading %d following %d offset %+.1f ms pos %.2f\n",
+               argc > 2 ? argv[2] : "AUTO", synth_get_param(syn, P_BPM), synth_running(syn), ss->peers, ss->leading,
+               ss->following, ss->offset_ms, synth_position(syn));
+        sync_close();
+        return 0;
+    }
     if (argc >= 3 && !strcmp(argv[1], "--scan")) { /* --scan <0 tag|1 name|2 random> [query]: test the directory */
         char ca[PATH_MAX + 16], err[200];
         snprintf(ca, sizeof ca, "%s/cacert.pem", app_dir);
@@ -1616,6 +1672,7 @@ int main(int argc, char **argv)
         return 0;
     }
 
+    sync_init(&sync_clock);
     signal(SIGTERM, on_signal);
     signal(SIGINT, on_signal);
     fprintf(stderr, "radioscan: audio %s at %d Hz, %d frames/buffer\n", audio_ok ? "open" : "FAILED", audio_rate, buffer);
@@ -1641,11 +1698,13 @@ int main(int argc, char **argv)
         }
         held_keys_update(now);
         logic_update(now);
+        sync_poll(now_us());
         render();
         present();
         SDL_Delay(30);
     }
 
+    sync_close();
     save_settings();
     SDL_PauseAudio(1);
     SDL_CloseAudio();
