@@ -48,21 +48,29 @@ rings, chance and drift keep it moving. It's designed for ambient performance an
   clocks are often wrong, but chain and hostname are still checked. Also handles HTTP, ICY metadata (song titles),
   redirects, and `.pls` / `.m3u` playlists.
 
-**Seeing the sound.** Everything is drawn live from the audio:
+**Seeing the sound.** The sound is drawn as abstract forms, not waveforms or graphs. Every point of the signal
+chain drives a "bloom":
 
-- **Voice circles.** Each voice circle shows the raw broadcast as a faint inner trace and the voice as it
-  leaves its engine and gate as a bright outer trace. You watch the gate chop it, the wavetable morph, and
-  grains scatter.
-- **Signal path.** Five small circles show the waveform at each stage: *radio → voice → filt1 → fold → filt2*.
-  - The filter rims show the live, modulated cutoff, and the marker grows with resonance.
-  - The fold rim shows the live drive, and its transfer curve is drawn behind the wave.
+| Sound | Form |
+|---|---|
+| Loudness | The core swells |
+| Brightness | Petal count (3, 5, 8, 13, 21) and spin speed: filtering calms a form, brightness makes it turn and multiply |
+| Spikiness | Sharp petals instead of soft lobes |
+| Attacks | Ripples spread outward |
+
+- **Voice circles.** Each voice circle shows the raw broadcast as a faint inner bloom and the voice after its
+  engine and gate as a bright outer bloom.
+- **Signal path.** Five small circles follow the chain: *radio → voice → filt1 → fold → filt2*.
+  - The fold circle's petals pass through the folder at its live settings, so more fold visibly bends and
+    splits them.
+  - Filter rims show the live, modulated cutoff (the marker grows with resonance), and the fold rim shows drive.
   - When a Euclidean ring fires, the stage it modulates flashes in that ring's colour; small dots under each
     circle show which rings are routed there.
-- **Output.** The final sound, after delay and reverb, circles the current note in the middle of the ring wheel.
-- **On EDIT pages,** the same signal path sits at the bottom, with the stage the selected setting affects
-  ringed, so you can see what a knob does as you turn it.
-- **Quiet sounds stay visible.** Traces scale themselves (quick to grow, slow to shrink), so quiet material
-  still shows clearly and gate dips still read.
+- **Output.** The final sound, after delay and reverb, blooms around the current note in the middle of the
+  ring wheel, and its ripples spread through the rings.
+- **On EDIT pages,** the same signal path sits at the bottom, with the stage the selected setting affects ringed.
+- **Quiet sounds stay visible.** Forms scale to the sound's own level, so quiet material still moves while true
+  silence stays still.
 
 The visual design is circles throughout: knobs, rings, pads. It follows the number five (five pages, five
 rings, five drifters, pentatonic and other five-note scales, 5/16 and 5/8 note values) and a forest palette of

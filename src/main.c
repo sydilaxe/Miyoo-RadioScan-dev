@@ -812,29 +812,77 @@ static void draw_voice_dots(int cx, int y, int o)
 
 /* ================================================================== PLAY screen */
 
-/* auto-scaling for traces: fast up, slow down, so quiet material is visible but gate dips still show */
-static float trace_peak[TAP_COUNT + 2];
+/* Abstract sound forms. Each tap of the signal chain drives a "bloom": its core swells with loudness,
+ * brightness sets how many petals it has (3, 5, 8, 13, 21) and how fast it turns, a spiky signal gives
+ * sharp petals, and sudden attacks send out ripples. No waveform is drawn literally. */
+typedef struct { float r, a; } Ripple;
+typedef struct {
+    float level, peak_env, slow;
+    float bright, rough, spin;
+    Ripple rip[5];
+} Bloom;
+static Bloom blooms[TAP_COUNT];
 
-static void autoscale(float *buf, int n, int slot)
+static void bloom_update(int tap, float dir)
 {
-    float pk = 0;
-    for (int i = 0; i < n; i++) { float a = fabsf(buf[i]); if (a > pk) pk = a; }
-    float *env = &trace_peak[slot];
-    *env = pk > *env ? pk : *env * 0.96f;
-    float g = 0.95f / (*env > 0.01f ? *env : 0.01f);
-    for (int i = 0; i < n; i++) {
-        float v = buf[i] * g;
-        buf[i] = v > 1 ? 1 : v < -1 ? -1 : v;
+    float rms, br, cr;
+    synth_tap_features(syn, tap, &rms, &br, &cr);
+    Bloom *b = &blooms[tap];
+    b->peak_env = rms > b->peak_env ? rms : b->peak_env * 0.985f;
+    float lv = rms / (b->peak_env > 0.003f ? b->peak_env : 0.003f);
+    if (rms < 0.0006f) lv *= rms / 0.0006f; /* true silence stays still */
+    b->level += (lv - b->level) * 0.35f;
+    b->bright += (br - b->bright) * 0.08f;
+    float rough = (cr - 1.3f) / 2.5f;
+    rough = rough < 0 ? 0 : rough > 1 ? 1 : rough;
+    b->rough += (rough - b->rough) * 0.15f;
+    b->spin += (0.004f + b->bright * 0.025f) * dir;
+    if (rms > b->slow * 1.6f && rms > 0.002f) /* an attack: release a ripple */
+        for (int i = 0; i < 5; i++)
+            if (b->rip[i].a < 0.05f) { b->rip[i].r = 0; b->rip[i].a = 1; break; }
+    b->slow += (rms - b->slow) * 0.05f;
+    for (int i = 0; i < 5; i++) {
+        b->rip[i].r += 0.05f;
+        b->rip[i].a *= 0.88f;
     }
 }
 
-/* a closed polar trace: radius r0 + v * amp around the circle */
-static void polar_trace(int cx, int cy, float r0, float amp, const float *v, int n, Uint32 col)
+static void update_blooms(void)
 {
+    for (int t = 0; t < TAP_COUNT; t++) bloom_update(t, (t & 1) ? -1.0f : 1.0f);
+}
+
+/* draw a bloom in the band rin..rout; ripples travel out to rmax. fold_type > 0 shapes the petals
+ * through the folder at its live drive, so folding is seen as petals bending and splitting. */
+static void draw_bloom(int cx, int cy, float rin, float rout, float rmax, int tap, Uint32 col, int fold_type,
+                       float fold_amt, float fold_bias)
+{
+    static const int fib[5] = {3, 5, 8, 13, 21};
+    const Bloom *b = &blooms[tap];
+    for (int i = 0; i < 5; i++)
+        if (b->rip[i].a > 0.05f) circle(cx, cy, (int)(rin + (rmax - rin) * b->rip[i].r), mix_col(C_BG, col, b->rip[i].a * 0.6f));
+    float bn = b->bright / 1.1f;
+    bn = bn < 0 ? 0 : bn > 1 ? 1 : bn;
+    float fi = bn * (rout - rin > 30 ? 4.0f : 3.0f); /* small forms stop at 13 petals */
+    int k0i = (int)fi, k1i = k0i + 1 > 4 ? 4 : k0i + 1;
+    float w = fi - k0i;
+    float lv = b->level > 1 ? 1 : b->level;
+    float rc = rin + (rout - rin) * (0.12f + 0.38f * lv);
+    float amp = (rout - rin) * (0.22f + 0.45f * b->rough) * (0.25f + 0.75f * lv);
+    float sharp = 1.0f + b->rough * 3.0f;
     int x0 = 0, y0 = 0;
-    for (int i = 0; i <= n; i++) {
+    const int N = 120;
+    for (int i = 0; i <= N; i++) {
+        float th = (float)(i % N) / N * 2.0f * (float)M_PI, g = 0;
+        for (int pass = 0; pass < 2; pass++) {
+            float k = (float)fib[pass ? k1i : k0i];
+            float u = sinf(k * th + b->spin), gv;
+            if (fold_type) gv = 0.5f + 0.5f * synth_fold_preview(fold_type, u * fold_amt * 0.6f + fold_bias);
+            else gv = powf(0.5f + 0.5f * u, sharp);
+            g += pass ? w * gv : (1 - w) * gv;
+        }
         int x, y;
-        polar(cx, cy, r0 + v[i % n] * amp, (float)i / n, &x, &y);
+        polar(cx, cy, rc + amp * g, (float)(i % N) / N, &x, &y);
         if (i) line(x0, y0, x, y, col);
         x0 = x;
         y0 = y;
@@ -884,15 +932,12 @@ static void draw_osc_circle(int o, int cx, int cy)
     int R = 74;
     disc(cx, cy, R, C_PANEL);
     circle(cx, cy, R, mix_col(C_PANEL2, col, lvl * 2));
-    /* before: the raw broadcast (or grabbed slice), faint, on the inner orbit */
-    synth_osc_snapshot(syn, o, snapbuf, 128);
-    autoscale(snapbuf, 128, TAP_COUNT + o);
-    polar_trace(cx, cy, 36, 12, snapbuf, 128, mix_col(C_PANEL, col, 0.45f));
-    /* after: the voice as it leaves its engine and gate, bright, on the outer orbit */
-    synth_tap(syn, o ? TAP_B : TAP_A, snapbuf, 128, 1024);
-    autoscale(snapbuf, 128, o ? TAP_B : TAP_A);
-    polar_trace(cx, cy, 60, 10, snapbuf, 128, col);
+    /* before: the raw broadcast, faint, on the inner band */
+    draw_bloom(cx, cy, 24, 42, 44, o ? TAP_RAW_B : TAP_RAW_A, mix_col(C_PANEL, col, 0.45f), 0, 0, 0);
+    /* after: the voice as it leaves its engine and gate, bright, on the outer band */
+    draw_bloom(cx, cy, 44, 70, R + 14, o ? TAP_B : TAP_A, col, 0, 0, 0);
     (void)mode;
+    (void)snapbuf;
     /* rhythmic gate pattern as dots on the outer orbit */
     int gsteps = (int)p[P_A_G_STEPS + o * OSC_STRIDE];
     int gp = (int)p[P_A_G_PULSES + o * OSC_STRIDE], gr = (int)p[P_A_G_ROTATE + o * OSC_STRIDE];
@@ -974,20 +1019,11 @@ static void draw_stages(int x0, int y, int spacing, int R, int highlight)
         if (i == highlight) circle(cx, y, R + 6, C_TEXT); /* the stage being edited */
         circle(cx, y, R, fl > 0.05f ? mix_col(C_PANEL2, fcol, fl) : C_PANEL2);
         if (fl > 0.05f) circle(cx, y, R + 1, mix_col(C_BG, fcol, fl));
-        if (i == 3 && lv.fold_type) { /* the folder's live transfer curve, behind the wave */
-            int px0 = 0, py0 = 0;
-            for (int k = 0; k <= 24; k++) {
-                float xin = -1.0f + k / 12.0f;
-                float yo = synth_fold_preview(lv.fold_type, xin * lv.fold_amount + lv.fold_bias);
-                int px_ = cx - R * 6 / 10 + k * (R * 12 / 10) / 24, py_ = y - (int)(yo * R * 0.55f);
-                if (k) line(px0, py0, px_, py_, C_BARK);
-                px0 = px_;
-                py0 = py_;
-            }
-        }
-        synth_tap(syn, taps[i], buf, 96, 1024);
-        autoscale(buf, 96, taps[i]);
-        polar_trace(cx, y, R * 0.62f, R * 0.3f, buf, 96, off ? C_PANEL2 : fl > 0.05f ? mix_col(C_TEXT, fcol, fl) : C_TEXT);
+        int fold_here = i == 3 && lv.fold_type;
+        draw_bloom(cx, y, R * 0.2f, R * 0.95f, R * 1.0f, taps[i],
+                   off ? C_PANEL2 : fl > 0.05f ? mix_col(C_TEXT, fcol, fl) : C_TEXT,
+                   fold_here ? lv.fold_type : 0, lv.fold_amount, lv.fold_bias);
+        (void)buf;
         /* live modulated settings on the rim: cutoff for the filters, drive for the folder */
         int mx, my;
         if ((i == 2 && lv.f1_mode) || (i == 4 && lv.f2_mode)) {
@@ -1032,12 +1068,9 @@ static void draw_play(void)
     note_name(synth_current_note(syn), nn, sizeof nn);
     disc(320, 128, 16, synth_gate_on(syn) ? mix_col(C_PANEL, C_LEAF, synth_env_value(syn)) : C_PANEL);
     { /* the final output, after delay and reverb, around the note */
-        static float ob[96];
         Uint32 oc = C_DIM;
         float fl = stage_flash(5, &oc);
-        synth_tap(syn, TAP_OUT, ob, 96, 1024);
-        autoscale(ob, 96, TAP_OUT);
-        polar_trace(320, 128, 22, 5, ob, 96, fl > 0.05f ? mix_col(C_DIM, oc, fl) : C_DIM);
+        draw_bloom(320, 128, 18, 29, 100, TAP_OUT, fl > 0.05f ? mix_col(C_DIM, oc, fl) : C_DIM, 0, 0, 0);
     }
     text_center(320, 119, nn, C_TEXT, 0);
     if (SDL_GetTicks() < ui.grab_flash) text_center(320, 232, "grabbed", C_LEAF, 0);
@@ -1269,10 +1302,7 @@ static void draw_edit(void)
     disc(590, 400, 36, C_PANEL);
     if (hl == 5) circle(590, 400, 40, C_TEXT);
     {
-        static float ob[128];
-        synth_tap(syn, TAP_OUT, ob, 128, 1024);
-        autoscale(ob, 128, TAP_OUT);
-        polar_trace(590, 400, 24, 9, ob, 128, C_TEXT);
+        draw_bloom(590, 400, 6, 34, 40, TAP_OUT, C_TEXT, 0, 0, 0);
     }
     draw_beat(440, 456);
     text(16, 456, "L1/R1 page  Y dice  START play", C_PANEL2, 0);
@@ -1541,6 +1571,7 @@ static void present(void)
 
 static void render(void)
 {
+    update_blooms();
     if (ui.screen == SCR_PLAY) draw_play();
     else draw_edit();
     if (ui.overlay == OV_KEYBOARD) draw_keyboard();
@@ -1779,10 +1810,17 @@ int main(int argc, char **argv)
         if (!strcmp(shot_view, "scan")) ui.overlay = OV_SCANMENU;
         /* let the engine run a moment so the rings and waves have something to show */
         static float fa[2048], fb[2048], fo[2048];
-        for (int i = 0; i < 2048; i++) { fa[i] = 0.3f * sinf(i * 0.05f) * sinf(i * 0.002f); fb[i] = 0.2f * sinf(i * 0.11f); }
+        for (int i = 0; i < 2048; i++) { /* A: noisy, bursty; B: a plain tone */
+            fa[i] = 0.25f * sinf(i * 0.05f) * sinf(i * 0.002f) + 0.15f * ((float)rand() / RAND_MAX - 0.5f) * (i % 700 < 200);
+            fb[i] = 0.2f * sinf(i * 0.011f);
+        }
         for (int k = 0; k < 40; k++) synth_process(syn, fa, fb, fo, 1024);
         synth_grab(syn, -1);
-        for (int k = 0; k < 10; k++) { synth_process(syn, fa, fb, fo, 1024); memcpy(scope_buf, fo, sizeof(float) * 2048); }
+        for (int k = 0; k < 30; k++) {
+            synth_process(syn, fa, fb, fo, 1024);
+            memcpy(scope_buf, fo, sizeof(float) * 2048);
+            update_blooms();
+        }
         scope_w = 2048;
         render();
         SDL_SaveBMP(screen, shot);

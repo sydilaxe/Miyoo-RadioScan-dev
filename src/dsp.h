@@ -131,7 +131,7 @@ float synth_osc_level(const Synth *s, int osc);
 int synth_osc_snapshot(Synth *s, int osc, float *dst, int n);
 
 /* Signal taps for the display: the live waveform at points along the chain. */
-enum { TAP_STREAM, TAP_VOICES, TAP_FILTER1, TAP_FOLD, TAP_FILTER2, TAP_OUT, TAP_A, TAP_B, TAP_COUNT };
+enum { TAP_STREAM, TAP_VOICES, TAP_FILTER1, TAP_FOLD, TAP_FILTER2, TAP_OUT, TAP_A, TAP_B, TAP_RAW_A, TAP_RAW_B, TAP_COUNT };
 /* Copy the most recent `span` samples of a tap, resampled to n points, starting at a rising zero crossing
  * when one is near so the picture holds still. */
 void synth_tap(const Synth *s, int tap, float *dst, int n, int span);
@@ -139,6 +139,9 @@ void synth_tap(const Synth *s, int tap, float *dst, int n, int span);
 typedef struct { float cutoff1, cutoff2, fold_amount, fold_bias; int fold_type, f1_mode, f2_mode; } SynthLive;
 void synth_live(const Synth *s, SynthLive *out);
 float synth_fold_preview(int fold_type, float x);   /* the folder's transfer curve */
+/* Sound features of a tap over the last ~20 ms: level (RMS), brightness (0 dark .. ~1.4 noise-bright)
+ * and crest factor (peak / RMS: ~1.4 smooth .. 4+ spiky). Drives the abstract forms on screen. */
+void synth_tap_features(const Synth *s, int tap, float *rms, float *bright, float *crest);
 
 float param_clamp(int id, float v);
 float param_adjust(int id, float v, int dir, int fine);

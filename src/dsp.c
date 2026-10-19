@@ -1539,6 +1539,8 @@ void synth_process(Synth *s, const float *inA, const float *inB, float *out, int
             unsigned tw = s->tap_w & 2047;
             s->tap[TAP_STREAM][tw] = 0.25f * (in[0][i * 2] + in[0][i * 2 + 1] + in[1][i * 2] + in[1][i * 2 + 1]);
             s->tap[TAP_A][tw] = am;
+            s->tap[TAP_RAW_A][tw] = 0.5f * (in[0][i * 2] + in[0][i * 2 + 1]);
+            s->tap[TAP_RAW_B][tw] = 0.5f * (in[1][i * 2] + in[1][i * 2 + 1]);
             s->tap[TAP_B][tw] = bm;
             s->tap[TAP_VOICES][tw] = 0.5f * (x[0] + x[1]);
             float t1 = 0, t2 = 0, t3 = 0;
@@ -1633,3 +1635,22 @@ found:
 void synth_live(const Synth *s, SynthLive *out) { *out = s->live; }
 
 float synth_fold_preview(int type, float x) { return type ? fold(type, x) : x; }
+
+void synth_tap_features(const Synth *s, int tap, float *rms, float *bright, float *crest)
+{
+    const float *t = s->tap[tap];
+    unsigned end = s->tap_w;
+    double e = 0, d = 0;
+    float pk = 0, prev = t[(end - 1025) & 2047];
+    for (unsigned i = end - 1024; i != end; i++) {
+        float v = t[i & 2047];
+        e += v * v;
+        d += (v - prev) * (v - prev);
+        prev = v;
+        if (fabsf(v) > pk) pk = fabsf(v);
+    }
+    float r = (float)sqrt(e / 1024.0);
+    *rms = r;
+    *bright = r > 1e-6f ? (float)sqrt(d / 1024.0) / r : 0;
+    *crest = r > 1e-6f ? pk / r : 1.4f;
+}
