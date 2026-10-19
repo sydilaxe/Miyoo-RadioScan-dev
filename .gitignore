@@ -1,0 +1,8 @@
+build/
+dist/
+App/RadioScan/radioscan
+App/RadioScan/settings.cfg
+App/RadioScan/log.txt
+*.o
+*.wav
+__pycache__/

@@ -1,0 +1,40 @@
+name: build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  miyoo:
+    name: Miyoo Mini Plus package
+    runs-on: ubuntu-latest
+    container: aemiii91/miyoomini-toolchain:latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: |
+          make package \
+            CROSS=/opt/miyoomini-toolchain/usr/bin/arm-linux-gnueabihf- \
+            SYSROOT=/opt/miyoomini-toolchain/usr/arm-linux-gnueabihf/sysroot
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RadioScan-miyoo
+          path: dist/RadioScan/
+
+  desktop:
+    name: Desktop build + offline test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y libsdl1.2-dev python3-numpy && pip install lameenc
+      - run: make
+      - name: Stream + synth test against a local fake Icecast server
+        run: |
+          python3 tools/fake_icecast.py --port 8765 &
+          for i in $(seq 1 60); do curl -s -o /dev/null http://127.0.0.1:8765/list.pls && break; sleep 1; done
+          mkdir -p t && cp App/RadioScan/cacert.pem t/
+          printf 'Speech|http://127.0.0.1:8765/list.pls|voice\nMusic|http://127.0.0.1:8765/redirect|music\n' > t/stations.txt
+          RADIOSCAN_DIR=t ./build/desktop/radioscan --render 8 t/out.wav 2>&1 | tee t/log.txt
+          grep -q "OSC A: voice sense .* (voice)" t/log.txt
+          grep -q "OSC B: voice sense .* (music)" t/log.txt
