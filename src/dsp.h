@@ -130,6 +130,16 @@ int synth_voice_state(const Synth *s, int osc);        /* VS_* */
 float synth_osc_level(const Synth *s, int osc);
 int synth_osc_snapshot(Synth *s, int osc, float *dst, int n);
 
+/* Signal taps for the display: the live waveform at points along the chain. */
+enum { TAP_STREAM, TAP_VOICES, TAP_FILTER1, TAP_FOLD, TAP_FILTER2, TAP_OUT, TAP_A, TAP_B, TAP_COUNT };
+/* Copy the most recent `span` samples of a tap, resampled to n points, starting at a rising zero crossing
+ * when one is near so the picture holds still. */
+void synth_tap(const Synth *s, int tap, float *dst, int n, int span);
+/* Live (modulated) values for drawing: filter cutoffs in Hz, fold drive and bias, fold type, gate per voice. */
+typedef struct { float cutoff1, cutoff2, fold_amount, fold_bias; int fold_type, f1_mode, f2_mode; } SynthLive;
+void synth_live(const Synth *s, SynthLive *out);
+float synth_fold_preview(int fold_type, float x);   /* the folder's transfer curve */
+
 float param_clamp(int id, float v);
 float param_adjust(int id, float v, int dir, int fine);
 void param_format_ctx(int id, const float *params, char *buf, int n);

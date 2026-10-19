@@ -432,6 +432,11 @@ struct Synth {
 
     float s_f1, s_f2, s_fold, s_drive, s_master, s_lvl[2];
     float win[WIN_N + 1];
+
+    /* display taps (mono rings written by the audio thread, read by the UI) */
+    float tap[TAP_COUNT][2048];
+    unsigned tap_w;
+    SynthLive live;
 };
 
 static inline float fast_tanh(float x)
@@ -1409,8 +1414,15 @@ void synth_process(Synth *s, const float *inA, const float *inB, float *out, int
         float famt = s->s_fold * exp2f(m.fold + d1) * (1.0f + lfo * s->p[P_LFO_TO_FOLD] + env * s->p[P_ENV_TO_FOLD]);
         if (famt < 0.05f) famt = 0.05f;
         float fbias = s->p[P_FOLD_BIAS];
+        s->live.cutoff1 = c1;
+        s->live.cutoff2 = c2;
+        s->live.fold_amount = famt;
+        s->live.fold_bias = fbias;
         float fmix = s->p[P_FOLD_MIX];
         int ftype = (int)s->p[P_FOLD_TYPE];
+        s->live.fold_type = ftype;
+        s->live.f1_mode = f1m;
+        s->live.f2_mode = f2m;
 
         float amp = 1.0f - s->p[P_LFO_TO_AMP] * (0.5f - 0.5f * lfo);
         if ((int)s->p[P_ENV_AMP] == 1) amp *= env;
@@ -1524,18 +1536,30 @@ void synth_process(Synth *s, const float *inA, const float *inB, float *out, int
             x[0] *= s->s_drive;
             x[1] *= s->s_drive;
 
+            unsigned tw = s->tap_w & 2047;
+            s->tap[TAP_STREAM][tw] = 0.25f * (in[0][i * 2] + in[0][i * 2 + 1] + in[1][i * 2] + in[1][i * 2 + 1]);
+            s->tap[TAP_A][tw] = am;
+            s->tap[TAP_B][tw] = bm;
+            s->tap[TAP_VOICES][tw] = 0.5f * (x[0] + x[1]);
+            float t1 = 0, t2 = 0, t3 = 0;
             for (int c = 0; c < 2; c++) {
                 float v = x[c];
                 if (f1m) v = svf_tick(&s->f1[c], v, k, a1, a2, a3, f1m);
+                t1 += v;
                 if (ftype) {
                     float w = fold(ftype, v * famt + fbias);
                     float y = w - s->dc_x[c] + 0.995f * s->dc_y[c];
                     s->dc_x[c] = w; s->dc_y[c] = y;
                     v = v + fmix * (y - v);
                 }
+                t2 += v;
                 if (f2m) v = ladder_tick(&s->f2[c], v, lf, lfb, ldrive, f2m);
+                t3 += v;
                 x[c] = v * amp;
             }
+            s->tap[TAP_FILTER1][tw] = 0.5f * t1;
+            s->tap[TAP_FOLD][tw] = 0.5f * t2;
+            s->tap[TAP_FILTER2][tw] = 0.5f * t3 * amp;
 
             /* ping-pong delay */
             s->dly_time_s += (dtarget - s->dly_time_s) * 0.0005f;
@@ -1562,6 +1586,8 @@ void synth_process(Synth *s, const float *inA, const float *inB, float *out, int
 
             out[i * 2] = fast_tanh(x[0] * s->s_master);
             out[i * 2 + 1] = fast_tanh(x[1] * s->s_master);
+            s->tap[TAP_OUT][tw] = 0.5f * (out[i * 2] + out[i * 2 + 1]);
+            s->tap_w++;
         }
     }
 }
@@ -1587,3 +1613,23 @@ int synth_osc_snapshot(Synth *s, int idx, float *dst, int n)
     }
     return n;
 }
+
+void synth_tap(const Synth *s, int tap, float *dst, int n, int span)
+{
+    if (span > 1024) span = 1024;
+    if (span < n) span = n;
+    const float *t = s->tap[tap];
+    unsigned end = s->tap_w;
+    unsigned start = end - (unsigned)span - 1024; /* look for a trigger in the 1024 samples before the window */
+    for (int i = 0; i < 1023; i++) {
+        float a = t[(start + i) & 2047], b = t[(start + i + 1) & 2047];
+        if (a <= 0 && b > 0) { start += i; goto found; }
+    }
+    start = end - (unsigned)span;
+found:
+    for (int i = 0; i < n; i++) dst[i] = t[(start + (unsigned)((long long)i * span / n)) & 2047];
+}
+
+void synth_live(const Synth *s, SynthLive *out) { *out = s->live; }
+
+float synth_fold_preview(int type, float x) { return type ? fold(type, x) : x; }

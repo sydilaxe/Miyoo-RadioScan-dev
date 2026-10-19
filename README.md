@@ -48,13 +48,30 @@ rings, chance and drift keep it moving. It's designed for ambient performance an
   clocks are often wrong, but chain and hostname are still checked. Also handles HTTP, ICY metadata (song titles),
   redirects, and `.pls` / `.m3u` playlists.
 
+**Seeing the sound.** Everything is drawn live from the audio:
+
+- **Voice circles.** Each voice circle shows the raw broadcast as a faint inner trace and the voice as it
+  leaves its engine and gate as a bright outer trace. You watch the gate chop it, the wavetable morph, and
+  grains scatter.
+- **Signal path.** Five small circles show the waveform at each stage: *radio → voice → filt1 → fold → filt2*.
+  - The filter rims show the live, modulated cutoff, and the marker grows with resonance.
+  - The fold rim shows the live drive, and its transfer curve is drawn behind the wave.
+  - When a Euclidean ring fires, the stage it modulates flashes in that ring's colour; small dots under each
+    circle show which rings are routed there.
+- **Output.** The final sound, after delay and reverb, circles the current note in the middle of the ring wheel.
+- **On EDIT pages,** the same signal path sits at the bottom, with the stage the selected setting affects
+  ringed, so you can see what a knob does as you turn it.
+- **Quiet sounds stay visible.** Traces scale themselves (quick to grow, slow to shrink), so quiet material
+  still shows clearly and gate dips still read.
+
 The visual design is circles throughout: knobs, rings, pads. It follows the number five (five pages, five
 rings, five drifters, pentatonic and other five-note scales, 5/16 and 5/8 note values) and a forest palette of
 moss, lichen, bark, leaf, autumn amber and birch.
 
 | | |
 |---|---|
-| ![voices](docs/edit1.png) | ![motion](docs/motion.png) |
+| ![voices](docs/edit1.png) | ![shape](docs/shape.png) |
+| ![motion](docs/motion.png) | ![scan](docs/scan.png) |
 | ![radio](docs/radio.png) | ![shaping](docs/playmod.png) |
 
 ## Install
