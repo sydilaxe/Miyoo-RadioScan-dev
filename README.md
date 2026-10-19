@@ -127,8 +127,12 @@ Keyboard on desktop, matching the Miyoo's key codes:
 
 ### Releasing
 
-Push a version tag (`git tag v0.2.0 && git push origin v0.2.0`). CI builds and tests it, then publishes a
-GitHub Release with `RadioScan.zip` attached, using the notes in `.github/release-notes.md`.
+Any of these builds, tests and publishes a GitHub Release with `RadioScan.zip` attached (notes come from
+`.github/release-notes.md`):
+
+- **Actions → build → Run workflow**, with a tag such as `v0.2.0` filled in.
+- Push a version tag: `git tag v0.2.0 && git push origin v0.2.0`.
+- Create a release on the GitHub website; the zip is added to it automatically.
 
 ### Testing without the internet
 
