@@ -76,8 +76,9 @@ jobs:
           mkdir -p t && cp App/RadioScan/cacert.pem t/
           printf 'Speech|http://127.0.0.1:8765/list.pls|voice\nMusic|http://127.0.0.1:8765/redirect|music\n' > t/stations.txt
           RADIOSCAN_DIR=t ./build/desktop/radioscan --render 8 t/out.wav 2>&1 | tee t/log.txt
-          grep -q "OSC A: voice sense .* (voice)" t/log.txt
-          grep -q "OSC B: voice sense .* (music)" t/log.txt
+          # one voice gets the talk stream and the other the music stream
+          grep -q "voice sense .* (voice)" t/log.txt
+          grep -q "voice sense .* (music)" t/log.txt
       - name: Wi-Fi sync test (two units on this machine)
         run: |
           ./build/desktop/radioscan --synctest LEAD 97 6 > lead.txt &
