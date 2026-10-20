@@ -60,7 +60,7 @@ The PLAY page is for performing: the two rhythms and the sound, live.
   and the outer one opens and closes with the voice's rhythm. Five dots underneath show how speech-like the
   station is.
 - **Rhythm rings.** Each voice wears its rhythm around its rim: coloured pulses, a white ring on the current step,
-  and pulses/steps under the engine name. The cross rhythm circles the centre the same way.
+  and pulses/steps and the rate under the engine name. The cross rhythm circles the centre the same way.
 - **Spectrum backdrop.** A soft frequency spectrum of the overall sound behind the circles. Its colour follows
   frequency, from indigo in the bass through rose in the mids to sky blue in the highs, hues kept apart from the
   voices' green and amber.
@@ -112,7 +112,7 @@ ring is outlined, and every change shows its pattern briefly, like `A  E(5,8) >2
 | X | rotate |
 | Y | a new random pattern |
 | hold L2 + up / down | steps |
-| hold L2 + left / right | rate (right = faster) |
+| hold L2 + left / right | rate: jump between 1/4, 1/8, 1/16 and 1/32 (right = faster; every rate is on the RHYTHM page) |
 | hold L2 + Y / X | gate length shorter / longer |
 | hold L2 + A | start / stop the rhythms (stopped, voices with a rhythm on are quiet; start begins on the downbeat) |
 | tap L2 | grab a fresh slice for the selected voice (both voices when the cross rhythm is selected) |

@@ -993,9 +993,15 @@ static void draw_seq_ring(int q, int cx, int cy, float r)
         int dx, dy;
         polar(cx, cy, r, (float)i / steps, &dx, &dy);
         int hit = euclid_hit(steps, pulses, rot, i), now = i == cur && on;
-        if (hit) disc(dx, dy, now ? 4 + (int)(fl * 2) : 4, now ? mix_col(cc, C_TEXT, fl) : cc);
-        else disc(dx, dy, 1, C_PANEL2);
-        if (now) circle(dx, dy, 6, C_TEXT);
+        if (hit) {
+            int r = now ? 6 + (int)(fl * 3) : 6;
+            disc(dx, dy, r + 2, C_BG); /* a dark edge so the dot stands out over the waveform */
+            disc(dx, dy, r, now ? mix_col(cc, C_TEXT, fl) : cc);
+        } else {
+            disc(dx, dy, 4, C_BG);
+            disc(dx, dy, 2, mix_col(C_PANEL2, C_DIM, 0.5f));
+        }
+        if (now) { circle(dx, dy, 9, C_TEXT); circle(dx, dy, 10, C_TEXT); }
     }
 }
 
@@ -1005,6 +1011,8 @@ static void seq_label(int q, char *t, int n)
     if ((int)p[SEQ_PARAM(q, 0)]) snprintf(t, n, "%d/%d", (int)p[SEQ_PARAM(q, 2)], (int)p[SEQ_PARAM(q, 1)]);
     else snprintf(t, n, "open");
 }
+
+static void seq_rate_label(int q, char *t, int n) { param_format_ctx(SEQ_SHAPE(q, RATE), synth_params(syn), t, n); }
 
 /* centred text with a dark outline, so it reads over a busy waveform */
 static void text_halo(int cx, int y, const char *s, Uint32 col)
@@ -1079,6 +1087,10 @@ static void draw_voice(int o, int cx, int cy, int R)
     text_halo(cx, cy - 20, mn[(int)p[P_A_MODE + o * OSC_STRIDE]], C_TEXT);
     disc(cx, cy + 4, 4, state_col(o));
     text_halo(cx, cy + 12, t, (int)p[SEQ_PARAM(o, 0)] ? C_DIM : C_PANEL2);
+    if ((int)p[SEQ_PARAM(o, 0)]) {
+        seq_rate_label(o, t, sizeof t);
+        text_halo(cx, cy + 30, t, C_DIM);
+    }
 }
 
 /* five circles along the chain after the voices; each grows the more it changes the sound */
@@ -1132,7 +1144,8 @@ static void draw_centre(int cx, int cy)
     text_center(cx, cy - 20, "cross", amount > 0.01f ? C_TEXT : C_DIM, 0);
     char t[16];
     seq_label(SEQ_X, t, sizeof t);
-    text_center(cx, cy + 12, t, on ? C_DIM : C_PANEL2, 0);
+    text_halo(cx, cy + 12, t, on ? C_DIM : C_PANEL2);
+    if (on) { seq_rate_label(SEQ_X, t, sizeof t); text_halo(cx, cy + 30, t, C_DIM); }
 
     float m = p[P_MORPH];
     int ar = CENTRE_R + 20;
@@ -1610,9 +1623,12 @@ static void cell_button(int b)
     if (ui.held[B_L2]) { /* steps, rate and gate length */
         ui.l2_used = 1;
         if (b == B_UP || b == B_DOWN) { synth_set_param(syn, steps, st + (b == B_UP ? 1 : -1)); cell_fix(q); }
-        if (b == B_LEFT || b == B_RIGHT) {
-            int r = SEQ_SHAPE(q, RATE); /* right = faster = a shorter note value */
-            synth_set_param(syn, r, synth_get_param(syn, r) + (b == B_RIGHT ? -1 : 1));
+        if (b == B_LEFT || b == B_RIGHT) { /* jump between 1/4, 1/8, 1/16 and 1/32; right = faster */
+            static const int quick[] = {0, 1, 3, 7}; /* indices of 1/32, 1/16, 1/8, 1/4 in the rate list */
+            int r = SEQ_SHAPE(q, RATE), cur = (int)synth_get_param(syn, r), next = cur;
+            if (b == B_RIGHT) { for (int i = 3; i >= 0; i--) if (quick[i] < cur) { next = quick[i]; break; } }
+            else { for (int i = 0; i < 4; i++) if (quick[i] > cur) { next = quick[i]; break; } }
+            synth_set_param(syn, r, (float)next);
         }
         if (b == B_A) { transport_toggle(); return; }
         if (b == B_X || b == B_Y) {
