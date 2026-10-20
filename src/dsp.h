@@ -28,6 +28,9 @@ enum {
     P_ECHO, P_SPACE, P_WIDTH, P_VOLUME,
     P_CROSS_LEVEL, P_SHAPE_LEVEL, P_ECHO_LEVEL, P_SPACE_LEVEL, /* MIX page: how loud each effect comes back */
     P_LIMIT,                                                   /* MIX page: master limiter */
+    /* the cross rhythm: when on, cross-modulation (morph, vocode, ring, FM) comes in only on its pulses */
+    P_X_GATE_ON, P_X_GATE_STEPS, P_X_GATE_PULSES, P_X_GATE_ROT,
+    P_X_RATE, P_X_LENGTH, P_X_ATTACK, P_X_RELEASE, P_X_CHANCE,
     P_COUNT
 };
 
@@ -36,6 +39,10 @@ enum {
 enum { CELL_GATE, NCELL };
 #define CELL_STRIDE 4
 #define CELL_PARAM(osc, cell, field) (P_A_GATE_ON + (osc) * OSC_STRIDE + (cell) * CELL_STRIDE + (field)) /* field 0 on, 1 steps, 2 pulses, 3 rotate */
+/* the three rhythms: voice A, voice B and the cross rhythm */
+enum { SEQ_A, SEQ_B, SEQ_X, SEQ_COUNT };
+#define SEQ_PARAM(seq, field) ((seq) == SEQ_X ? P_X_GATE_ON + (field) : CELL_PARAM(seq, CELL_GATE, field))
+#define SEQ_SHAPE(seq, p) ((seq) == SEQ_X ? P_X_##p : P_A_##p + (seq) * OSC_STRIDE) /* RATE, LENGTH, ATTACK, RELEASE, CHANCE */
 
 enum { OSC_LIVE, OSC_LOOP, OSC_WAVE, OSC_GRAIN };
 enum { FOCUS_ALL, FOCUS_VOICE, FOCUS_MUSIC };
@@ -97,6 +104,9 @@ void synth_process(Synth *s, const float *inA, const float *inB, float *out, int
 int synth_current_note(const Synth *s);
 int synth_cell_step(const Synth *s, int osc, int cell);    /* current step of a rhythm cell */
 float synth_cell_flash(const Synth *s, int osc, int cell);  /* 1 on a hit, fading */
+int synth_seq_step(const Synth *s, int seq);           /* current step of SEQ_A, SEQ_B or SEQ_X */
+float synth_seq_flash(const Synth *s, int seq);
+float synth_cross_gate(const Synth *s);                /* how open the cross rhythm is now, 0..1 */
 float synth_gate_value(const Synth *s, int osc);       /* how open the voice is now, 0..1 */
 float synth_speechness(const Synth *s, int osc);       /* 0 music .. 1 speech */
 int synth_voice_state(const Synth *s, int osc);        /* VS_* */

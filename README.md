@@ -22,8 +22,9 @@ a wavefolder, echo and space.
   It's off by default; the radio comes first.
 - **Two rhythms.** Each voice has a Euclidean rhythm that decides when it sounds: steps, pulses, rotate, rate
   and chance, and a gate shape (attack, length, release) from soft swells to sharp chops. With the rhythm off,
-  the voice plays continuously. Both rhythms are played directly on the PLAY page, as on hi5. Tap tempo
-  (SELECT) and Wi-Fi sync drive both.
+  the voice plays continuously. A third, **cross rhythm** brings the cross-modulation (morph, vocode, ring,
+  FM) in on its pulses, with the same controls and gate shape; off, the cross stage stays on as set. All three
+  rhythms are played directly on the PLAY page, as on hi5. Tap tempo (SELECT) and Wi-Fi sync drive them all.
 - **Cross-modulation.**
   - **Vocode:** A speaks through B, or B through A, with 5, 8, 13, 21 or 34 bands.
   - **FM:** one voice bends the other's pitch.
@@ -55,13 +56,13 @@ The PLAY page is for performing: the two rhythms and the sound, live.
 
 - **Voice circles (left A, right B).** A faint inner form shows the raw broadcast; a bright outer form shows
   the voice as it sounds. Five dots underneath show how speech-like the station is.
-- **Rhythm rings.** Under each voice: its steps around a ring, with coloured pulses, a white ring on the current
-  step, and pulses/steps in the middle.
+- **Rhythm rings.** Each voice wears its rhythm around its rim: coloured pulses, a white ring on the current step,
+  and pulses/steps under the engine name. The cross rhythm circles the centre the same way.
 - **Spectrum backdrop.** A soft frequency spectrum behind the circles. Each band's height is the output level,
   and its colour shows which voice dominates it: leaf green for A, amber for B.
 - **Converse.** The voice holding the floor gets a bright ring.
-- **Centre.** The final sound. The dot travelling over the top shows the morph position, from A on the left to
-  B on the right.
+- **Centre.** The final sound, with the cross rhythm around it. The dot travelling over the top shows the morph
+  position, from A on the left to B on the right.
 - **Five circles along the bottom:** *cross → filter → fold → echo → space*. Each grows the more it changes
   the sound.
 - **Abstract forms.** Every form is driven by the sound, not drawn as a waveform:
@@ -93,12 +94,12 @@ With the card mounted on a computer, `make install SD=/path/to/card` copies the 
 
 **PLAY** (performance)
 
-The two rhythm rings under the voices are played like hi5's pattern cells. The selected ring is outlined, and
-every change shows its pattern briefly, like `A  E(5,8) >2  1/8`.
+The three rhythm rings (voice A, cross in the middle, voice B) are played like hi5's pattern cells. The selected
+ring is outlined, and every change shows its pattern briefly, like `A  E(5,8) >2  1/8`.
 
 | Button | Action |
 |---|---|
-| D-pad left / right | select voice A or B's rhythm |
+| D-pad left / right | select the rhythm: voice A, cross or voice B |
 | D-pad up / down | more / fewer pulses |
 | A | rhythm on / off (off = the voice plays continuously) |
 | B | fewer pulses, wrapping back to all |

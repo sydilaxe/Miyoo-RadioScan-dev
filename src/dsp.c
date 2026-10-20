@@ -93,6 +93,15 @@ const ParamInfo param_info[P_COUNT] = {
     [P_ECHO_LEVEL]  = {"echo_level", "Echo Level", PAGE_MIX, 0, 2, 1, 0.02f, 0, "lvl", NULL},
     [P_SPACE_LEVEL] = {"space_level", "Space Level", PAGE_MIX, 0, 2, 1, 0.02f, 0, "lvl", NULL},
     [P_LIMIT]       = {"limit", "Limiter", PAGE_MIX, 0, 1, 0, 0.02f, 0, "limit", NULL},
+    [P_X_GATE_ON]     = {"x_gate_on", "Rhythm", PAGE_RHYTHM, 0, 1, 0, 1, 0, "", offon},
+    [P_X_GATE_STEPS]  = {"x_gate_steps", "Rhythm Steps", PAGE_RHYTHM, 1, 16, 8, 1, 0, "int", NULL},
+    [P_X_GATE_PULSES] = {"x_gate_pulses", "Rhythm Pulses", PAGE_RHYTHM, 0, 16, 3, 1, 0, "int", NULL},
+    [P_X_GATE_ROT]    = {"x_gate_rot", "Rhythm Rotate", PAGE_RHYTHM, 0, 15, 0, 1, 0, "int", NULL},
+    [P_X_RATE]        = {"x_rate", "Rate", PAGE_RHYTHM, 0, 14, 3, 1, 0, "", rates},
+    [P_X_LENGTH]      = {"x_length", "Gate Length", PAGE_RHYTHM, 0.05f, 1, 0.6f, 0.05f, 0, "", NULL},
+    [P_X_ATTACK]      = {"x_attack", "Gate Attack", PAGE_RHYTHM, 0, 1, 0.1f, 0.05f, 0, "", NULL},
+    [P_X_RELEASE]     = {"x_release", "Gate Release", PAGE_RHYTHM, 0, 1, 0.3f, 0.05f, 0, "", NULL},
+    [P_X_CHANCE]      = {"x_chance", "Chance", PAGE_RHYTHM, 0, 1, 1, 0.05f, 0, "", NULL},
 };
 
 static int osc_of(int id) { return id >= P_A_STATION && id <= P_B_CHANCE ? (id - P_A_STATION) / OSC_STRIDE : -1; }
@@ -105,6 +114,7 @@ const char *param_section(int id)
         if (osc_field(id) >= P_A_GATE_ON) return o ? "RHYTHM B" : "RHYTHM A";
         return o ? "VOICE B" : "VOICE A";
     }
+    if (id >= P_X_GATE_ON) return "RHYTHM CROSS";
     if (id <= P_SYNC) return "CLOCK";
     if (id <= P_CONVERSE) return "CROSS";
     if (id <= P_ROOT) return "KEY";
@@ -320,6 +330,10 @@ struct Synth {
     float s_fx[4];             /* smoothed effect return levels: cross, shape, echo, space */
     float meter[MIX_COUNT], meter_fall;
     float lim_env, lim_rel;    /* master limiter: peak envelope and its release coefficient */
+    /* the cross rhythm */
+    long x_step_abs;
+    int x_idx, x_hit;
+    float x_flash, x_gate;
     float win[WIN_N + 1];
     float tap[TAP_COUNT][TAP_LEN];
     unsigned tap_w;
@@ -395,6 +409,8 @@ Synth *synth_create(int sample_rate)
     for (int i = 0; i < 4; i++) s->s_fx[i] = 1.0f;
     s->meter_fall = expf(-1.0f / (0.3f * s->fs));
     s->lim_rel = expf(-1.0f / (0.08f * s->fs));
+    s->x_step_abs = -1;
+    s->x_gate = 1;
     s->dly_time_s = 0.3f * s->fs;
     bank_setup(s, 13);
     return s;
@@ -425,6 +441,9 @@ float synth_speechness(const Synth *s, int o) { return s->osc[o].vad.speech; }
 int synth_voice_state(const Synth *s, int o) { return s->osc[o].vad.state; }
 float synth_osc_level(const Synth *s, int o) { return s->osc[o].level; }
 float synth_leveller_gain(const Synth *s) { return s->lev_gain; }
+int synth_seq_step(const Synth *s, int q) { return q == SEQ_X ? s->x_idx : s->osc[q].cell_idx[CELL_GATE]; }
+float synth_seq_flash(const Synth *s, int q) { return q == SEQ_X ? s->x_flash : s->osc[q].cell_flash[CELL_GATE]; }
+float synth_cross_gate(const Synth *s) { return s->x_gate; }
 float synth_mix_meter(const Synth *s, int ch) { return ch >= 0 && ch < MIX_COUNT ? s->meter[ch] : 0; }
 int synth_floor(const Synth *s) { return s->p[P_CONVERSE] > 0.01f ? s->floor_holder : -1; }
 
@@ -462,6 +481,7 @@ void synth_tap_reset(Synth *s)
 {
     s->beat_pos = 0;
     for (int o = 0; o < 2; o++) s->osc[o].step_abs = -1;
+    s->x_step_abs = -1;
 }
 
 float synth_beat_phase(const Synth *s) { return (float)(s->beat_pos - floor(s->beat_pos)); }
@@ -492,12 +512,12 @@ static void dice_range(int id, float *lo, float *hi)
     case P_A_SIZE: *lo = 2; *hi = 600; break;
     case P_A_LEVEL: *lo = 0.6f; *hi = 1; break;
     case P_A_PAN: *lo = -0.7f; *hi = 0.7f; break;
-    case P_A_GATE_STEPS: *lo = 3; *hi = 16; break;
-    case P_A_ATTACK: *lo = 0; *hi = 0.5f; break;
-    case P_A_RELEASE: *lo = 0; *hi = 0.6f; break;
-    case P_A_RATE: *lo = 1; *hi = 11; break;
-    case P_A_LENGTH: *lo = 0.2f; *hi = 1; break;
-    case P_A_CHANCE: *lo = 0.5f; *hi = 1; break;
+    case P_A_GATE_STEPS: case P_X_GATE_STEPS: *lo = 3; *hi = 16; break;
+    case P_A_ATTACK: case P_X_ATTACK: *lo = 0; *hi = 0.5f; break;
+    case P_A_RELEASE: case P_X_RELEASE: *lo = 0; *hi = 0.6f; break;
+    case P_A_RATE: case P_X_RATE: *lo = 1; *hi = 11; break;
+    case P_A_LENGTH: case P_X_LENGTH: *lo = 0.2f; *hi = 1; break;
+    case P_A_CHANCE: case P_X_CHANCE: *lo = 0.5f; *hi = 1; break;
     case P_TONE: *lo = -0.7f; *hi = 0.5f; break;
     case P_RESO: *lo = 0; *hi = 0.7f; break;
     case P_FOLD: *lo = 0; *hi = 0.6f; break;
@@ -545,12 +565,11 @@ void synth_randomize(Synth *s, const int *ids, int n, float amount)
         }
         s->p[id] = param_clamp(id, v);
     }
-    for (int o = 0; o < 2; o++) /* keep pulses <= steps and rotation inside the pattern */
-        for (int c = 0; c < NCELL; c++) {
-            float *st = &s->p[CELL_PARAM(o, c, 1)];
-            if (st[1] > st[0]) st[1] = floorf(1 + rnd01(s) * (st[0] - 1));
-            if (st[2] >= st[0]) st[2] = floorf(rnd01(s) * st[0]);
-        }
+    for (int q = 0; q < SEQ_COUNT; q++) { /* keep pulses <= steps and rotation inside the pattern */
+        float *st = &s->p[SEQ_PARAM(q, 1)];
+        if (st[1] > st[0]) st[1] = floorf(1 + rnd01(s) * (st[0] - 1));
+        if (st[2] >= st[0]) st[2] = floorf(rnd01(s) * st[0]);
+    }
 }
 
 void synth_dice(Synth *s, int which)
@@ -559,7 +578,7 @@ void synth_dice(Synth *s, int which)
     for (int i = 0; i < P_COUNT; i++) {
         int pg = param_info[i].page;
         int o = osc_of(i);
-        int rhythm = o >= 0 && osc_field(i) >= P_A_GATE_ON;
+        int rhythm = (o >= 0 && osc_field(i) >= P_A_GATE_ON) || (i > P_X_GATE_ON && i <= P_X_CHANCE); /* cross on/off stays */
         if (which == DICE_SOUND && (pg == PAGE_VOICES || pg == PAGE_ENGINE || pg == PAGE_MIX)) ids[n++] = i;
         if (which == DICE_RHYTHM && rhythm) ids[n++] = i;
         if (which == DICE_MUTATE && !param_info[i].choices) ids[n++] = i;
@@ -838,42 +857,53 @@ static void vad_tick(Vad *v, float m)
 
 /* ------------------------------------------------------------------ rhythm */
 
-/* Each voice's Euclidean rhythm opens it on every pulse: attack, hold for Length of the step, release.
- * A LOOP voice also restarts its slice on every pulse. Rhythm off = the voice plays continuously. */
-static float rhythm_eval(Synth *s, int idx, double beat)
+/* A Euclidean rhythm's gate at this beat: attack, hold for Length of the step, release. Sets *new_hit on the
+ * first sample of a step that has a pulse. Rhythm off = always open. */
+static float euclid_gate(Synth *s, int q, double beat, long *step_abs, int *idx, int *hit, float *flash, int *new_hit)
 {
-    Osc *o = &s->osc[idx];
-    const float *p = s->p + idx * OSC_STRIDE;
-    float step_beats = rate_beats[(int)p[P_A_RATE]];
-    float step_s = step_beats * 60.0f / s->p[P_BPM];
+    const float *p = s->p;
+    float step_beats = rate_beats[(int)p[SEQ_SHAPE(q, RATE)]];
+    float step_s = step_beats * 60.0f / p[P_BPM];
     double sp = beat / step_beats;
     long step = (long)floor(sp);
-    if (step != o->step_abs) {
-        o->step_abs = step;
-        int steps = (int)p[P_A_GATE_STEPS];
-        o->cell_idx[CELL_GATE] = (int)(step % steps);
-        o->cell_hit[CELL_GATE] = (int)p[P_A_GATE_ON] &&
-                                 euclid_hit(steps, (int)p[P_A_GATE_PULSES], (int)p[P_A_GATE_ROT], o->cell_idx[CELL_GATE]) &&
-                                 rnd01(s) < p[P_A_CHANCE];
-        if (o->cell_hit[CELL_GATE]) {
-            o->cell_flash[CELL_GATE] = 1;
-            if ((int)p[P_A_MODE] == OSC_LOOP) o->phase = 0;
-            if ((int)p[P_A_MODE] == OSC_GRAIN) o->grain_timer = 0;
-        }
+    int on = (int)p[SEQ_PARAM(q, 0)];
+    *new_hit = 0;
+    if (step != *step_abs) {
+        *step_abs = step;
+        int steps = (int)p[SEQ_PARAM(q, 1)];
+        *idx = (int)(step % steps);
+        *hit = on && euclid_hit(steps, (int)p[SEQ_PARAM(q, 2)], (int)p[SEQ_PARAM(q, 3)], *idx) &&
+               rnd01(s) < p[SEQ_SHAPE(q, CHANCE)];
+        if (*hit) { *flash = 1; *new_hit = 1; }
     }
-    if (!(int)p[P_A_GATE_ON]) return 1.0f;
-    if (!o->cell_hit[CELL_GATE]) return 0.0f;
-    float t = (float)(sp - step), len = p[P_A_LENGTH];
-    float att = p[P_A_ATTACK] * len, min_att = 0.004f / step_s; /* never faster than 4 ms */
+    if (!on) return 1.0f;
+    if (!*hit) return 0.0f;
+    float t = (float)(sp - step), len = p[SEQ_SHAPE(q, LENGTH)];
+    float att = p[SEQ_SHAPE(q, ATTACK)] * len, min_att = 0.004f / step_s; /* never faster than 4 ms */
     if (att < min_att) att = min_att;
     if (att > len) att = len;
-    float rel = p[P_A_RELEASE] * (1.0f - len) + min_att;
+    float rel = p[SEQ_SHAPE(q, RELEASE)] * (1.0f - len) + min_att;
     float g;
     if (t < att) g = t / att;
     else if (t < len) g = 1;
     else if (t < len + rel) g = 1 - (t - len) / rel;
     else g = 0;
     return g * g * (3 - 2 * g);
+}
+
+/* Each voice's rhythm opens it on every pulse. A LOOP voice also restarts its slice on every pulse. */
+static float rhythm_eval(Synth *s, int idx, double beat)
+{
+    Osc *o = &s->osc[idx];
+    int nh;
+    float g = euclid_gate(s, idx, beat, &o->step_abs, &o->cell_idx[CELL_GATE], &o->cell_hit[CELL_GATE],
+                          &o->cell_flash[CELL_GATE], &nh);
+    if (nh) {
+        int mode = (int)s->p[P_A_MODE + idx * OSC_STRIDE];
+        if (mode == OSC_LOOP) o->phase = 0;
+        if (mode == OSC_GRAIN) o->grain_timer = 0;
+    }
+    return g;
 }
 
 /* ------------------------------------------------------------------ reverb */
@@ -985,6 +1015,7 @@ void synth_process(Synth *s, const float *inA, const float *inB, float *out, int
             s->s_lvl[o] += (t - s->s_lvl[o]) * 0.15f;
             for (int c = 0; c < NCELL; c++) s->osc[o].cell_flash[c] *= expf(-n / (0.15f * fs));
         }
+        s->x_flash *= expf(-n / (0.15f * fs));
         s->s_vol += (db2lin(s->p[P_VOLUME]) - s->s_vol) * 0.15f;
         for (int f = 0; f < 4; f++) s->s_fx[f] += (s->p[P_CROSS_LEVEL + f] - s->s_fx[f]) * 0.15f;
         const float cross_lvl = s->s_fx[0], shape_lvl = s->s_fx[1], echo_lvl = s->s_fx[2], space_lvl = s->s_fx[3];
@@ -1065,6 +1096,10 @@ void synth_process(Synth *s, const float *inA, const float *inB, float *out, int
             }
             s->tap[TAP_STREAM][tw] = 0.5f * (s->tap[TAP_RAW_A][tw] + s->tap[TAP_RAW_B][tw]);
 
+            int xnh;
+            float xg = euclid_gate(s, SEQ_X, beat, &s->x_step_abs, &s->x_idx, &s->x_hit, &s->x_flash, &xnh);
+            s->x_gate += (xg - s->x_gate) * 0.04f;
+            const float xgate = s->x_gate;
             float x[2] = {0, 0}, vm[2] = {0, 0};
             /* the modulating voice runs first so it can bend the other one's pitch (FM) */
             int first = fm_dir == FM_B_TO_A ? 1 : 0;
@@ -1072,7 +1107,7 @@ void synth_process(Synth *s, const float *inA, const float *inB, float *out, int
                 int o = k2 == 0 ? first : !first;
                 Osc *os = &s->osc[o];
                 float fmr = 1.0f;
-                if (k2 == 1 && fm > 0.001f) fmr = exp2f(fm * 4.0f * vm[first] * 2.0f);
+                if (k2 == 1 && fm > 0.001f) fmr = exp2f(fm * xgate * 4.0f * vm[first] * 2.0f);
                 osc_tick(s, o, ratio[o] * fmr, freq[o] * fmr);
                 float gg = rhythm_eval(s, o, beat);
                 os->gate += (gg - os->gate) * 0.04f;
@@ -1135,7 +1170,7 @@ void synth_process(Synth *s, const float *inA, const float *inB, float *out, int
                     x[1] += mm * (h - x[1]);
                 }
             }
-            for (int c = 0; c < 2; c++) x[c] = dry[c] + cross_lvl * (x[c] - dry[c]); /* cross return level */
+            for (int c = 0; c < 2; c++) x[c] = dry[c] + cross_lvl * xgate * (x[c] - dry[c]); /* cross return level, opened by the cross rhythm */
             meter_hit(&mt[MIX_CROSS], fmaxf(fabsf(x[0] - dry[0]), fabsf(x[1] - dry[1])), fall);
             s->tap[TAP_CROSS][tw] = 0.5f * (x[0] + x[1]);
 

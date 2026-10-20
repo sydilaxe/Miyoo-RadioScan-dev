@@ -88,7 +88,7 @@ static struct {
     int held[B_COUNT];
     Uint32 held_since[B_COUNT], last_repeat[B_COUNT];
     int l2_used;              /* L2 acted as a modifier while held (otherwise a tap = grab) */
-    int cell;                 /* PLAY: selected rhythm cell, 0..5 (A gate, stut, grab, B gate, stut, grab) */
+    int cell;                 /* PLAY: selected rhythm, SEQ_A, SEQ_B or SEQ_X (the cross rhythm in the middle) */
     char toast[128];
     Uint32 toast_until;
     Uint32 grab_flash, menu_armed;
@@ -959,8 +959,46 @@ static void draw_spectrum(void)
     }
 }
 
+/* PLAY layout: two voices with the cross stage between them, each wearing its rhythm as a ring of steps */
+#define VOICE_Y 132
+#define VOICE_R 88
+#define VOICE_AX 108
+#define VOICE_BX 532
+#define CENTRE_R 76
+
+static const char *seq_name(int q) { return q == SEQ_X ? "cross" : q == SEQ_B ? "B" : "A"; }
+static Uint32 seq_col(int q) { return q == SEQ_X ? C_TEXT : osc_col(q); }
+
+/* a rhythm, hi5 style: its steps around a circle, pulses lit, a white ring on the current step */
+static void draw_seq_ring(int q, int cx, int cy, float r)
+{
+    const float *p = synth_params(syn);
+    Uint32 col = seq_col(q);
+    int on = (int)p[SEQ_PARAM(q, 0)], steps = (int)p[SEQ_PARAM(q, 1)];
+    int pulses = (int)p[SEQ_PARAM(q, 2)], rot = (int)p[SEQ_PARAM(q, 3)];
+    Uint32 cc = on ? col : mix_col(C_PANEL2, col, 0.3f);
+    if (ui.cell == q) { circle(cx, cy, (int)r + 9, col); circle(cx, cy, (int)r + 10, col); }
+    int cur = synth_seq_step(syn, q);
+    float fl = synth_seq_flash(syn, q);
+    for (int i = 0; i < steps; i++) {
+        int dx, dy;
+        polar(cx, cy, r, (float)i / steps, &dx, &dy);
+        int hit = euclid_hit(steps, pulses, rot, i), now = i == cur && on;
+        if (hit) disc(dx, dy, now ? 4 + (int)(fl * 2) : 4, now ? mix_col(cc, C_TEXT, fl) : cc);
+        else disc(dx, dy, 1, C_PANEL2);
+        if (now) circle(dx, dy, 6, C_TEXT);
+    }
+}
+
+static void seq_label(int q, char *t, int n)
+{
+    const float *p = synth_params(syn);
+    if ((int)p[SEQ_PARAM(q, 0)]) snprintf(t, n, "%d/%d", (int)p[SEQ_PARAM(q, 2)], (int)p[SEQ_PARAM(q, 1)]);
+    else snprintf(t, n, "open");
+}
+
 /* a voice: faint bloom of the raw broadcast inside, bright bloom of the voice as it sounds outside,
- * and its rhythm as dots around the rim */
+ * and its rhythm around the rim */
 static void draw_voice(int o, int cx, int cy, int R)
 {
     Uint32 col = osc_col(o);
@@ -970,37 +1008,14 @@ static void draw_voice(int o, int cx, int cy, int R)
     circle(cx, cy, R, mix_col(C_PANEL2, col, gate * synth_osc_level(syn, o) * 2.0f));
     if (synth_floor(syn) == o) { circle(cx, cy, R + 1, col); circle(cx, cy, R + 2, col); } /* converse: has the floor */
     draw_bloom(cx, cy, R * 0.26f, R * 0.48f, R * 0.5f, o ? TAP_RAW_B : TAP_RAW_A, mix_col(C_PANEL, col, 0.45f), 0);
-    draw_bloom(cx, cy, R * 0.52f, R * 0.92f, R + 10, o ? TAP_B : TAP_A, col, 0);
+    draw_bloom(cx, cy, R * 0.52f, R * 0.92f, R + 6, o ? TAP_B : TAP_A, col, 0);
+    draw_seq_ring(o, cx, cy, R - 7);
     static const char *const mn[] = {"live", "loop", "wave", "grain"};
-    text_center(cx, cy - 9, mn[(int)p[P_A_MODE + o * OSC_STRIDE]], C_TEXT, 0);
-    disc(cx, cy + 16, 4, state_col(o));
-}
-
-/* a voice's rhythm, hi5 style: a ring of steps with the pulses lit and pulses/steps inside */
-static void draw_rhythm(int o, int x, int y)
-{
-    const float *p = synth_params(syn);
-    Uint32 col = osc_col(o);
-    int on = (int)p[CELL_PARAM(o, CELL_GATE, 0)], steps = (int)p[CELL_PARAM(o, CELL_GATE, 1)];
-    int pulses = (int)p[CELL_PARAM(o, CELL_GATE, 2)], rot = (int)p[CELL_PARAM(o, CELL_GATE, 3)];
-    int sel = ui.cell == o;
-    Uint32 cc = on ? col : mix_col(C_PANEL2, col, 0.3f);
-    disc(x, y, 36, sel ? mix_col(C_PANEL, col, 0.18f) : C_PANEL);
-    if (sel) { circle(x, y, 38, col); circle(x, y, 39, col); }
-    int cur = synth_cell_step(syn, o, CELL_GATE);
-    float fl = synth_cell_flash(syn, o, CELL_GATE);
-    for (int i = 0; i < steps; i++) {
-        int dx, dy;
-        polar(x, y, 29, (float)i / steps, &dx, &dy);
-        int hit = euclid_hit(steps, pulses, rot, i);
-        if (hit) disc(dx, dy, i == cur && on ? 4 + (int)(fl * 2) : 4, i == cur && on ? mix_col(cc, C_TEXT, fl) : cc);
-        else disc(dx, dy, 1, C_PANEL2);
-        if (i == cur && on) circle(dx, dy, 6, C_TEXT);
-    }
+    text_center(cx, cy - 20, mn[(int)p[P_A_MODE + o * OSC_STRIDE]], C_TEXT, 0);
+    disc(cx, cy + 4, 4, state_col(o));
     char t[16];
-    if (on) snprintf(t, sizeof t, "%d/%d", pulses, steps);
-    else snprintf(t, sizeof t, "open");
-    text_center(x, y - 9, t, on ? C_TEXT : C_PANEL2, 0);
+    seq_label(o, t, sizeof t);
+    text_center(cx, cy + 12, t, (int)p[SEQ_PARAM(o, 0)] ? C_DIM : C_PANEL2, 0);
 }
 
 /* five circles along the chain after the voices; each grows the more it changes the sound */
@@ -1039,16 +1054,21 @@ static void draw_stages(int x0, int y, int spacing, float rmin, float rmax, int 
     }
 }
 
-/* centre: the final sound, with the morph position travelling over the top from A (left) to B (right) */
+/* centre: the final sound with the cross rhythm around it, and the morph position travelling over the top
+ * from A (left) to B (right) */
 static void draw_centre(int cx, int cy)
 {
     const float *p = synth_params(syn);
-    disc(cx, cy, 64, C_PANEL);
-    draw_bloom(cx, cy, 10, 60, 100, TAP_OUT, C_TEXT, 0);
+    int on = (int)p[P_X_GATE_ON];
+    disc(cx, cy, CENTRE_R, C_PANEL);
+    circle(cx, cy, CENTRE_R, mix_col(C_PANEL2, C_TEXT, on ? synth_cross_gate(syn) * synth_cross_amount(syn) : 0));
+    draw_bloom(cx, cy, 12, CENTRE_R - 16, CENTRE_R + 20, TAP_OUT, C_TEXT, 0);
+    draw_seq_ring(SEQ_X, cx, cy, CENTRE_R - 7);
     float m = p[P_MORPH];
-    arc(cx, cy, 74, 2, 0.75f, 1.25f, C_PANEL2);
+    int ar = CENTRE_R + 20;
+    arc(cx, cy, ar, 2, 0.75f, 1.25f, C_PANEL2);
     int mx, my;
-    polar(cx, cy, 74, 0.75f + 0.5f * m, &mx, &my);
+    polar(cx, cy, ar, 0.75f + 0.5f * m, &mx, &my);
     disc(mx, my, m > 0.01f ? 6 : 4, m > 0.01f ? mix_col(C_LEAF, C_AMBER, m) : C_PANEL2);
     char b[48] = "";
     int voc = (int)p[P_VOCODE];
@@ -1057,7 +1077,11 @@ static void draw_centre(int cx, int cy)
     else if (p[P_RING] > 0.01f) snprintf(b, sizeof b, "ring");
     else if (m > 0.01f) snprintf(b, sizeof b, "morph");
     else if (p[P_CONVERSE] > 0.01f) snprintf(b, sizeof b, "converse");
-    if (b[0]) text_center(cx, cy + 72, b, C_DIM, 0);
+    else snprintf(b, sizeof b, "no cross");
+    char t[16];
+    seq_label(SEQ_X, t, sizeof t);
+    text_center(cx, cy + CENTRE_R + 10, b, b[0] == 'n' ? C_PANEL2 : C_DIM, 0);
+    if (on || ui.cell == SEQ_X) text_center(cx, cy + CENTRE_R + 28, t, on ? C_DIM : C_PANEL2, 0);
 }
 
 static void draw_play(void)
@@ -1068,21 +1092,20 @@ static void draw_play(void)
     draw_beat(520, 8);
     char info[48];
     snprintf(info, sizeof info, "pitch %+d", ui.octave);
-    text_center(320, 8, info, C_DIM, 0);
+    text(126, 8, info, C_DIM, 0);
 
-    draw_voice(0, 104, 108, 68);
-    draw_voice(1, 536, 108, 68);
-    draw_centre(320, 108);
+    draw_voice(0, VOICE_AX, VOICE_Y, VOICE_R);
+    draw_voice(1, VOICE_BX, VOICE_Y, VOICE_R);
+    draw_centre(320, VOICE_Y);
     for (int o = 0; o < 2; o++) {
-        int cx = o ? 536 : 104;
-        draw_voice_dots(cx, 186, o);
-        draw_rhythm(o, cx, 236);
-        text_center(cx, 288, osc_station_name(o), C_TEXT, 19);
+        int cx = o ? VOICE_BX : VOICE_AX;
+        draw_voice_dots(cx, VOICE_Y + VOICE_R + 16, o);
+        text_center(cx, VOICE_Y + VOICE_R + 30, osc_station_name(o), C_TEXT, 19);
         char line_[256];
         osc_status_line(o, line_, sizeof line_);
-        text_center(cx, 306, line_, C_DIM, 19);
+        text_center(cx, VOICE_Y + VOICE_R + 48, line_, C_DIM, 19);
     }
-    if (SDL_GetTicks() < ui.grab_flash) text_center(320, 236, "grabbed", C_LEAF, 0);
+    if (SDL_GetTicks() < ui.grab_flash) text_center(320, VOICE_Y + CENTRE_R + 46, "grabbed", C_LEAF, 0);
 
     int hl = -1;
     if (ui.held[B_R2]) {
@@ -1095,8 +1118,8 @@ static void draw_play(void)
 
     const char *hint = ui.held[B_R2] ? "dpad: filter / morph   X B: fold   Y A: space" :
                        ui.held[B_L2] ? "^v steps  <> rate  Y X length" :
-                                       "<> voice  ^v pulses  A on  B fewer  X rotate  Y new";
-    text_center(320, 330, hint, C_DIM, 0);
+                                       "<> rhythm  ^v pulses  A on  B fewer  X rotate  Y new";
+    text_center(320, 322, hint, C_DIM, 0);
     text(16, 455, "L1/R1 pitch  L2 grab  SELECT tap  START edit  MENU x2 quit", C_PANEL2, 0);
 }
 
@@ -1445,49 +1468,52 @@ static void adjust_param(int id, int dir)
 
 /* ---- rhythm cells on the PLAY page, played like hi5's pattern grid ---- */
 
-static void cell_say(int o, int c)
+static void cell_say(int q)
 {
     const float *p = synth_params(syn);
     char rate[24];
-    param_format_ctx(P_A_RATE + o * OSC_STRIDE, p, rate, sizeof rate);
-    if (!(int)p[CELL_PARAM(o, c, 0)]) toast("%c rhythm off (always open)", 'A' + o);
-    else toast("%c  E(%d,%d) >%d  %s", 'A' + o, (int)p[CELL_PARAM(o, c, 2)],
-               (int)p[CELL_PARAM(o, c, 1)], (int)p[CELL_PARAM(o, c, 3)], rate);
+    param_format_ctx(SEQ_SHAPE(q, RATE), p, rate, sizeof rate);
+    if (!(int)p[SEQ_PARAM(q, 0)]) toast(q == SEQ_X ? "cross rhythm off (cross always on)" : "%s rhythm off (always open)", seq_name(q));
+    else toast("%s  E(%d,%d) >%d  %s", seq_name(q), (int)p[SEQ_PARAM(q, 2)], (int)p[SEQ_PARAM(q, 1)],
+               (int)p[SEQ_PARAM(q, 3)], rate);
 }
 
 /* keep pulses and rotation inside the pattern */
-static void cell_fix(int o, int c)
+static void cell_fix(int q)
 {
-    int st = (int)synth_get_param(syn, CELL_PARAM(o, c, 1));
-    if (synth_get_param(syn, CELL_PARAM(o, c, 2)) > st) synth_set_param(syn, CELL_PARAM(o, c, 2), (float)st);
-    if (synth_get_param(syn, CELL_PARAM(o, c, 3)) >= st) synth_set_param(syn, CELL_PARAM(o, c, 3), (float)(st - 1));
+    int st = (int)synth_get_param(syn, SEQ_PARAM(q, 1));
+    if (synth_get_param(syn, SEQ_PARAM(q, 2)) > st) synth_set_param(syn, SEQ_PARAM(q, 2), (float)st);
+    if (synth_get_param(syn, SEQ_PARAM(q, 3)) >= st) synth_set_param(syn, SEQ_PARAM(q, 3), (float)(st - 1));
 }
 
 static void cell_button(int b)
 {
-    int o = ui.cell / NCELL, c = ui.cell % NCELL;
-    int on = CELL_PARAM(o, c, 0), steps = CELL_PARAM(o, c, 1), pulses = CELL_PARAM(o, c, 2), rot = CELL_PARAM(o, c, 3);
+    static const int order[SEQ_COUNT] = {SEQ_A, SEQ_X, SEQ_B}; /* left to right on screen */
+    int q = ui.cell;
+    int on = SEQ_PARAM(q, 0), steps = SEQ_PARAM(q, 1), pulses = SEQ_PARAM(q, 2), rot = SEQ_PARAM(q, 3);
     int st = (int)synth_get_param(syn, steps);
     if (ui.held[B_L2]) { /* steps, rate and gate length */
         ui.l2_used = 1;
-        if (b == B_UP || b == B_DOWN) { synth_set_param(syn, steps, st + (b == B_UP ? 1 : -1)); cell_fix(o, c); }
+        if (b == B_UP || b == B_DOWN) { synth_set_param(syn, steps, st + (b == B_UP ? 1 : -1)); cell_fix(q); }
         if (b == B_LEFT || b == B_RIGHT) {
-            int r = P_A_RATE + o * OSC_STRIDE; /* right = faster = a shorter note value */
+            int r = SEQ_SHAPE(q, RATE); /* right = faster = a shorter note value */
             synth_set_param(syn, r, synth_get_param(syn, r) + (b == B_RIGHT ? -1 : 1));
         }
         if (b == B_X || b == B_Y) {
-            int l = P_A_LENGTH + o * OSC_STRIDE;
+            int l = SEQ_SHAPE(q, LENGTH);
             synth_set_param(syn, l, synth_get_param(syn, l) + (b == B_X ? 0.05f : -0.05f));
             char v[16];
             param_format_ctx(l, synth_params(syn), v, sizeof v);
-            toast("%c gate length %s", 'A' + o, v);
+            toast("%s gate length %s", seq_name(q), v);
             ui.dirty_settings = 1;
             return;
         }
     } else {
+        int pos = 0;
+        for (int i = 0; i < SEQ_COUNT; i++) if (order[i] == q) pos = i;
         switch (b) {
-        case B_LEFT: ui.cell = (ui.cell + NCELL * 2 - 1) % (NCELL * 2); break;
-        case B_RIGHT: ui.cell = (ui.cell + 1) % (NCELL * 2); break;
+        case B_LEFT: ui.cell = order[(pos + SEQ_COUNT - 1) % SEQ_COUNT]; break;
+        case B_RIGHT: ui.cell = order[(pos + 1) % SEQ_COUNT]; break;
         case B_UP: synth_set_param(syn, pulses, synth_get_param(syn, pulses) + 1); synth_set_param(syn, on, 1); break;
         case B_DOWN: synth_set_param(syn, pulses, synth_get_param(syn, pulses) - 1); break;
         case B_A: synth_set_param(syn, on, !(int)synth_get_param(syn, on)); break;
@@ -1510,9 +1536,7 @@ static void cell_button(int b)
         default: return;
         }
     }
-    o = ui.cell / NCELL;
-    c = ui.cell % NCELL;
-    cell_say(o, c);
+    cell_say(ui.cell);
     ui.dirty_settings = 1;
 }
 
@@ -1954,6 +1978,7 @@ int main(int argc, char **argv)
         if (!strcmp(shot_view, "edit")) ui.tab = shot_tab;
         if (!strcmp(shot_view, "radio")) ui.tab = TAB_RADIO;
         if (!strcmp(shot_view, "rhythm")) ui.tab = TAB_RHYTHM;
+        if (!strcmp(shot_view, "rhythmx")) { ui.tab = TAB_RHYTHM; ui.sel[TAB_RHYTHM] = 99; }
         if (!strcmp(shot_view, "engine")) ui.tab = TAB_ENGINE;
         if (!strcmp(shot_view, "mix")) ui.tab = TAB_MIX;
         if (!strcmp(shot_view, "kb")) open_keyboard(KB_ADD_URL, "http://ice1.somafm.com/");
