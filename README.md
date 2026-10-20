@@ -128,10 +128,11 @@ every change shows its pattern briefly, like `A  E(5,8) >2  1/8`.
 | SELECT | tap tempo |
 | START | back to PLAY |
 
-**MIX page:** ten faders in four groups: VOICE A (level, drive), VOICE B (level, drive), EFFECTS (cross,
-shape, echo and space return levels) and MASTER (limiter, volume). Left / Right choose a fader, Up / Down move it
-(hold B for fine steps), and Y puts it back to its default. Levels are shown in dB; the tick on each track is unity
-(0 dB), and faders go up to +6 dB. Each fader's meter shows its signal after the fader; the limiter's meter shows
+**MIX page:** faders in four groups: VOICE A and VOICE B (a level fader with a drive knob under it), EFFECTS
+(cross, shape, echo and space return levels) and MASTER (limiter, volume). Left / Right step through the controls
+(each voice's drive knob comes right after its fader), Up / Down set the selected one (hold B for fine steps), and
+Y puts it back to its default. Levels are shown in dB; the tick on each track is unity
+(0 dB), and faders go up to +6 dB. Each meter shows its signal after the fader; the limiter's meter shows
 how much it is turning the sound down. An effect's return level sets how loud it comes back, while its amount on
 the ENGINE page still sets its character (echo feedback, reverb length, how hard the folder works). The limiter
 goes from off to an 18 dB threshold, with the output made back up to just under full scale.

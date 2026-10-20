@@ -1234,21 +1234,27 @@ static void draw_param_page(void)
 
 /* ------------------------------------------------------------------ MIX page: a fader for every level */
 
-typedef struct { int id, meter, group; const char *name; } MixStrip;
+/* one control on the MIX page: a fader, or a knob under its strip's fader (the voices' drive) */
+typedef struct { int id, meter, group, strip, knob; const char *name; } MixStrip;
 enum { MG_A, MG_B, MG_FX, MG_MASTER, MG_COUNT };
 static const char *const mix_group_names[MG_COUNT] = {"VOICE A", "VOICE B", "EFFECTS", "MASTER"};
-static const MixStrip mix_strips[] = {
-    {P_A_LEVEL, MIX_A, MG_A, "level"},       {P_A_DRIVE, -1, MG_A, "drive"},
-    {P_B_LEVEL, MIX_B, MG_B, "level"},       {P_B_DRIVE, -1, MG_B, "drive"},
-    {P_CROSS_LEVEL, MIX_CROSS, MG_FX, "cross"}, {P_SHAPE_LEVEL, MIX_SHAPE, MG_FX, "shape"},
-    {P_ECHO_LEVEL, MIX_ECHO, MG_FX, "echo"},  {P_SPACE_LEVEL, MIX_SPACE, MG_FX, "space"},
-    {P_LIMIT, MIX_LIMIT, MG_MASTER, "limit"}, {P_VOLUME, MIX_OUT, MG_MASTER, "volume"},
+static const MixStrip mix_strips[] = { /* in Left / Right order */
+    {P_A_LEVEL, MIX_A, MG_A, 0, 0, "level"},           {P_A_DRIVE, -1, MG_A, 0, 1, "drive"},
+    {P_B_LEVEL, MIX_B, MG_B, 1, 0, "level"},           {P_B_DRIVE, -1, MG_B, 1, 1, "drive"},
+    {P_CROSS_LEVEL, MIX_CROSS, MG_FX, 2, 0, "cross"},  {P_SHAPE_LEVEL, MIX_SHAPE, MG_FX, 3, 0, "shape"},
+    {P_ECHO_LEVEL, MIX_ECHO, MG_FX, 4, 0, "echo"},     {P_SPACE_LEVEL, MIX_SPACE, MG_FX, 5, 0, "space"},
+    {P_LIMIT, MIX_LIMIT, MG_MASTER, 6, 0, "limit"},    {P_VOLUME, MIX_OUT, MG_MASTER, 7, 0, "volume"},
 };
 #define MIX_N ((int)(sizeof mix_strips / sizeof mix_strips[0]))
-#define MIX_X0 10
-#define MIX_W 62
-#define MIX_TOP 82
-#define MIX_BOT 292
+#define MIX_STRIPS 8
+#define MIX_W 70      /* strip width; the two voice strips are wider */
+#define MIX_W_VOICE 94
+#define MIX_TOP 84
+#define MIX_BOT 236
+#define MIX_KNOB_Y 288
+
+static int mix_strip_x(int strip) { return 22 + (strip < 2 ? strip * MIX_W_VOICE : 2 * MIX_W_VOICE + (strip - 2) * MIX_W); }
+static int mix_strip_w(int strip) { return strip < 2 ? MIX_W_VOICE : MIX_W; }
 
 static Uint32 mix_group_col(int g) { return g == MG_A ? C_LEAF : g == MG_B ? C_AMBER : g == MG_FX ? C_WATER : C_TEXT; }
 
@@ -1259,7 +1265,7 @@ static float mix_frac(int id, float v)
     return f < 0 ? 0 : f > 1 ? 1 : f;
 }
 
-/* short value for under a fader (the full one is shown for the selected fader) */
+/* short value for under a control (the full one is shown for the selected control) */
 static void mix_short_value(int id, float v, char *b, int n)
 {
     const char *unit = param_info[id].unit;
@@ -1269,63 +1275,84 @@ static void mix_short_value(int id, float v, char *b, int n)
     else snprintf(b, n, "%.0f%%", v * 100);
 }
 
+static void draw_mix_fader(const MixStrip *m, int cx, int sel, const float *p)
+{
+    Uint32 col = mix_group_col(m->group);
+    int h = MIX_BOT - MIX_TOP;
+    int tx = cx - 6; /* the track, with the meter to its right */
+    fill(tx - 1, MIX_TOP, 3, h, C_PANEL2);
+    float f = mix_frac(m->id, p[m->id]);
+    int ty = MIX_BOT - (int)(f * h);
+    fill(tx - 1, ty, 3, MIX_BOT - ty, sel ? col : mix_col(C_PANEL2, col, 0.6f));
+    float unity = !strcmp(param_info[m->id].unit, "lvl") ? mix_frac(m->id, 1.0f) :
+                  m->id == P_VOLUME ? mix_frac(m->id, 0.0f) : -1;
+    if (unity >= 0) { int uy = MIX_BOT - (int)(unity * h); fill(tx - 9, uy, 4, 1, C_DIM); }
+    fill(tx - 11, ty - 4, 23, 9, sel ? C_TEXT : C_DIM); /* thumb */
+    fill(tx - 9, ty, 19, 1, C_BG);
+    if (m->meter >= 0) {
+        float mv = synth_mix_meter(syn, m->meter);
+        int mx = cx + 10;
+        fill(mx, MIX_TOP, 5, h, C_PANEL);
+        if (m->meter == MIX_LIMIT) { /* gain reduction grows down from the top */
+            int gh = (int)(fminf(mv * 2.0f, 1.0f) * h);
+            fill(mx, MIX_TOP, 5, gh, C_RUST);
+        } else {
+            float db = 20.0f * log10f(mv + 1e-6f), mf = (db + 48.0f) / 48.0f; /* -48 .. 0 dB */
+            mf = mf < 0 ? 0 : mf > 1 ? 1 : mf;
+            int mh = (int)(mf * h);
+            fill(mx, MIX_BOT - mh, 5, mh, db > -1.0f ? C_RUST : db > -9.0f ? C_AMBER : col);
+        }
+    }
+    char v[24];
+    mix_short_value(m->id, p[m->id], v, sizeof v);
+    text_center(cx, MIX_BOT + 8, v, sel ? C_TEXT : C_DIM, 7);
+}
+
+static void draw_mix_knob(const MixStrip *m, int cx, int sel, const float *p)
+{
+    Uint32 col = mix_group_col(m->group);
+    int w = mix_strip_w(m->strip);
+    if (sel) fill(cx - w / 2 + 2, MIX_KNOB_Y - 26, w - 4, 66, C_SEL);
+    text_center(cx, MIX_KNOB_Y - 24, m->name, sel ? C_TEXT : C_DIM, 7);
+    knob(cx, MIX_KNOB_Y + 4, 13, mix_frac(m->id, p[m->id]), 0, sel ? col : C_DIM);
+    char v[24];
+    mix_short_value(m->id, p[m->id], v, sizeof v);
+    text_center(cx, MIX_KNOB_Y + 20, v, sel ? C_TEXT : C_DIM, 7);
+}
+
 static void draw_mix_page(void)
 {
     const float *p = synth_params(syn);
     if (ui.mix_sel < 0 || ui.mix_sel >= MIX_N) ui.mix_sel = 0;
-    /* group headings over their faders */
+    /* group headings over their strips */
     for (int g = 0; g < MG_COUNT; g++) {
         int first = -1, last = -1;
         for (int i = 0; i < MIX_N; i++)
-            if (mix_strips[i].group == g) { if (first < 0) first = i; last = i; }
-        int x0 = MIX_X0 + first * MIX_W + 4, x1 = MIX_X0 + (last + 1) * MIX_W - 4;
+            if (mix_strips[i].group == g) { if (first < 0) first = mix_strips[i].strip; last = mix_strips[i].strip; }
+        int x0 = mix_strip_x(first) + 4, x1 = mix_strip_x(last) + mix_strip_w(last) - 4;
         Uint32 col = mix_group_col(g);
         text_center((x0 + x1) / 2, 36, mix_group_names[g], mix_col(C_DIM, col, 0.6f), 0);
         fill(x0, 58, x1 - x0, 1, mix_col(C_PANEL2, col, 0.4f));
     }
-    for (int i = 0; i < MIX_N; i++) {
+    const MixStrip *cur = &mix_strips[ui.mix_sel];
+    for (int i = 0; i < MIX_N; i++) { /* the selected fader's strip is lit */
         const MixStrip *m = &mix_strips[i];
-        int x = MIX_X0 + i * MIX_W, cx = x + MIX_W / 2, sel = i == ui.mix_sel;
-        Uint32 col = mix_group_col(m->group);
-        if (sel) fill(x + 2, 62, MIX_W - 4, MIX_BOT - 62 + 36, C_SEL);
-        text_center(cx, 62, m->name, sel ? C_TEXT : C_DIM, 6);
-        int h = MIX_BOT - MIX_TOP;
-        int tx = cx - 6; /* fader track, with the meter to its right */
-        fill(tx - 1, MIX_TOP, 3, h, C_PANEL2);
-        float f = mix_frac(m->id, p[m->id]);
-        int ty = MIX_BOT - (int)(f * h);
-        fill(tx - 1, ty, 3, MIX_BOT - ty, sel ? col : mix_col(C_PANEL2, col, 0.6f));
-        float unity = !strcmp(param_info[m->id].unit, "lvl") ? mix_frac(m->id, 1.0f) :
-                      m->id == P_VOLUME ? mix_frac(m->id, 0.0f) : -1;
-        if (unity >= 0) { int uy = MIX_BOT - (int)(unity * h); fill(tx - 9, uy, 4, 1, C_DIM); }
-        /* thumb */
-        fill(tx - 11, ty - 4, 23, 9, sel ? C_TEXT : C_DIM);
-        fill(tx - 9, ty, 19, 1, C_BG);
-        if (m->meter >= 0) {
-            float mv = synth_mix_meter(syn, m->meter);
-            int mx = cx + 10;
-            fill(mx, MIX_TOP, 5, h, C_PANEL);
-            if (m->meter == MIX_LIMIT) { /* gain reduction grows down from the top */
-                int gh = (int)(fminf(mv * 2.0f, 1.0f) * h);
-                fill(mx, MIX_TOP, 5, gh, C_RUST);
-            } else {
-                float db = 20.0f * log10f(mv + 1e-6f), mf = (db + 48.0f) / 48.0f; /* -48 .. 0 dB */
-                mf = mf < 0 ? 0 : mf > 1 ? 1 : mf;
-                int mh = (int)(mf * h);
-                fill(mx, MIX_BOT - mh, 5, mh, db > -1.0f ? C_RUST : db > -9.0f ? C_AMBER : col);
-            }
-        }
-        char v[24];
-        mix_short_value(m->id, p[m->id], v, sizeof v);
-        text_center(cx, MIX_BOT + 8, v, sel ? C_TEXT : C_DIM, 6);
+        if (m->knob) continue;
+        int x = mix_strip_x(m->strip), w = mix_strip_w(m->strip), cx = x + w / 2, sel = m == cur;
+        if (sel) fill(x + 2, 62, w - 4, MIX_BOT - 62 + 30, C_SEL);
+        text_center(cx, 62, m->name, sel ? C_TEXT : C_DIM, 7);
+        draw_mix_fader(m, cx, sel, p);
     }
-    const MixStrip *m = &mix_strips[ui.mix_sel];
+    for (int i = 0; i < MIX_N; i++)
+        if (mix_strips[i].knob)
+            draw_mix_knob(&mix_strips[i], mix_strip_x(mix_strips[i].strip) + mix_strip_w(mix_strips[i].strip) / 2,
+                          &mix_strips[i] == cur, p);
     char full[64], line_[160];
-    param_format_ctx(m->id, p, full, sizeof full);
-    snprintf(line_, sizeof line_, "%s %s  %s", mix_group_names[m->group], m->name, full);
+    param_format_ctx(cur->id, p, full, sizeof full);
+    snprintf(line_, sizeof line_, "%s %s  %s", mix_group_names[cur->group], cur->name, full);
     for (char *c = line_; *c && c < line_ + 8; c++) *c = (char)tolower((unsigned char)*c);
     text(24, 340, line_, C_TEXT, 30);
-    text_right(624, 340, "<> fader  ^v set  hold B fine", C_PANEL2, 0);
+    text_right(624, 340, "<> choose  ^v set  hold B fine", C_PANEL2, 0);
 }
 
 /* which of the five stages the selected setting acts on (-1: a voice or nothing) */
