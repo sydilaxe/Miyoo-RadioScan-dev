@@ -113,7 +113,6 @@ void synth_dice(Synth *s, int which);
 void synth_process(Synth *s, const float *inA, const float *inB, float *out, int frames);
 
 /* display */
-int synth_current_note(const Synth *s);
 int synth_seq_step(const Synth *s, int seq);           /* current step of SEQ_A, SEQ_B or SEQ_X */
 float synth_seq_flash(const Synth *s, int seq);
 float synth_cross_gate(const Synth *s);                /* how open the cross rhythm is now, 0..1 */
@@ -121,7 +120,6 @@ float synth_gate_value(const Synth *s, int osc);       /* how open the voice is 
 float synth_speechness(const Synth *s, int osc);       /* 0 music .. 1 speech */
 int synth_voice_state(const Synth *s, int osc);        /* VS_* */
 float synth_osc_level(const Synth *s, int osc);
-float synth_leveller_gain(const Synth *s);
 int synth_floor(const Synth *s);                       /* converse: which voice holds the floor (0, 1), -1 off */
 /* copy the latest n samples (n <= 2048) of a tap, oldest first */
 void synth_tap_read(const Synth *s, int tap, float *dst, int n);
@@ -140,6 +138,5 @@ float synth_mix_meter(const Synth *s, int ch);
 float param_clamp(int id, float v);
 float param_adjust(int id, float v, int dir, int fine);
 void param_format_ctx(int id, const float *params, char *buf, int n);
-const char *note_name(int midi_note, char *buf, int n);
 
 #endif

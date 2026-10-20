@@ -2,6 +2,7 @@
 #define _GNU_SOURCE
 #endif
 #include "stream.h"
+#include "interp.h"
 #include "net.h"
 
 #define MINIMP3_IMPLEMENTATION
@@ -53,12 +54,6 @@ struct Stream {
     float hist[2];                    /* the frame just before ring_r, for the cubic resampler */
 };
 
-/* 4-point cubic (Hermite) interpolation at t between x0 and x1 */
-static inline float hermite(float xm1, float x0, float x1, float x2, float t)
-{
-    float c = 0.5f * (x1 - xm1), v = x0 - x1, w = c + v, a = w + v + 0.5f * (x2 - x0), b = w + a;
-    return ((a * t - b) * t + c) * t + x0;
-}
 
 #define DECLICK_SEC 0.005f
 

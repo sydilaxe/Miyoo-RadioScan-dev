@@ -1,4 +1,5 @@
 #include "dsp.h"
+#include "interp.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -181,12 +182,6 @@ static float grain_density(float t) { return 1.0f + t * 15.0f; }
 static float tone_cutoff(float tone) /* < 0: low-pass from 20 kHz down to 150 Hz; > 0: high-pass up to 3 kHz */
 {
     return tone < 0 ? 20000.0f * powf(150.0f / 20000.0f, -tone) : 20.0f * powf(3000.0f / 20.0f, tone);
-}
-
-const char *note_name(int n, char *buf, int len)
-{
-    snprintf(buf, len, "%s%d", roots[((n % 12) + 12) % 12], n / 12 - 1);
-    return buf;
 }
 
 void param_format_ctx(int id, const float *params, char *buf, int n)
@@ -495,12 +490,10 @@ void synth_destroy(Synth *s)
 void synth_set_param(Synth *s, int id, float v) { s->p[id] = param_clamp(id, v); }
 float synth_get_param(const Synth *s, int id) { return s->p[id]; }
 const float *synth_params(const Synth *s) { return s->p; }
-int synth_current_note(const Synth *s) { return s->last_note; }
 float synth_gate_value(const Synth *s, int o) { return s->rh[o].gate; }
 float synth_speechness(const Synth *s, int o) { return s->osc[o].vad.speech; }
 int synth_voice_state(const Synth *s, int o) { return s->osc[o].vad.state; }
 float synth_osc_level(const Synth *s, int o) { return s->osc[o].level; }
-float synth_leveller_gain(const Synth *s) { return s->lev_gain; }
 int synth_seq_step(const Synth *s, int q) { return q >= SEQ_SA ? s->rh[q - SEQ_SA].st.idx : s->rh[q].idx; }
 float synth_seq_flash(const Synth *s, int q) { return q >= SEQ_SA ? s->rh[q - SEQ_SA].st.flash : s->rh[q].flash; }
 float synth_cross_gate(const Synth *s) { return s->rh[SEQ_X].gate; }
@@ -737,14 +730,6 @@ static void osc_grab(Osc *o, int len, int normalise)
     }
     o->snap_len[dst] = len;
     o->morph = 0.000001f;
-}
-
-/* 4-point cubic (Hermite) interpolation at t between x0 and x1: much cleaner than a straight line when a sound is
- * replayed at another pitch, which otherwise dulls the highs and adds grit */
-static inline float hermite(float xm1, float x0, float x1, float x2, float t)
-{
-    float c = 0.5f * (x1 - xm1), v = x0 - x1, w = c + v, a = w + v + 0.5f * (x2 - x0), b = w + a;
-    return ((a * t - b) * t + c) * t + x0;
 }
 
 static inline float snap_read(const Osc *o, int which, double phase, int c)
@@ -1216,6 +1201,50 @@ float synth_fold_preview(float x, float fold)
 static inline void meter_hit(float *m, float v, float fall) { *m = v > *m ? v : *m * fall; }
 static inline void meter_peak(float *m, float l, float r, float fall) { meter_hit(m, fmaxf(fabsf(l), fabsf(r)), fall); }
 
+/* ------------------------------------------------------------------ output stage */
+
+/* DC blocker (r: pole near 1): radio streams and effects can carry a slow offset that only eats headroom */
+static inline void dc_block(Synth *s, float *x, float r)
+{
+    for (int c = 0; c < 2; c++) {
+        float y = x[c] - s->dc_x[c] + r * s->dc_y[c];
+        s->dc_x[c] = x[c];
+        s->dc_y[c] = y;
+        x[c] = y;
+    }
+}
+
+/* leveller: follows the mix's loudness and works out the gain (-6 .. +9.5 dB) toward a steady level, slowly
+ * enough not to pump; Auto Level decides how much of it is applied */
+static inline void leveller_track(Synth *s, const float *x)
+{
+    float e = 0.5f * (x[0] * x[0] + x[1] * x[1]);
+    s->lev_env += (e - s->lev_env) * 0.0005f;
+    if (s->lev_env > 1e-6f) {
+        float target = 0.18f / sqrtf(s->lev_env);
+        target = target < 0.5f ? 0.5f : target > 3.0f ? 3.0f : target;
+        float coef = target < s->lev_gain ? 0.0002f : 0.00002f; /* down in ~0.1 s, up in ~1 s */
+        s->lev_gain += (target - s->lev_gain) * coef;
+    }
+}
+
+/* look-ahead limiter: holds the loudest peak of the last 1.5 ms and eases the gain down to keep it under the
+ * ceiling by the time it comes out of the delay; releases at rel (per-sample coefficient) */
+static inline void limiter_tick(Synth *s, float *x, float ceiling, float rel)
+{
+    float pk = fmaxf(fabsf(x[0]), fabsf(x[1]));
+    if (pk >= s->lim_hold) { s->lim_hold = pk; s->lim_cnt = s->lim_la; }
+    else if (--s->lim_cnt <= 0) { s->lim_hold = pk; s->lim_cnt = s->lim_la; }
+    float target = s->lim_hold > ceiling ? ceiling / s->lim_hold : 1.0f;
+    s->lim_g += (target - s->lim_g) * (target < s->lim_g ? s->lim_att : rel);
+    unsigned w = s->lim_w & (LIM_N - 1), r = (s->lim_w - (unsigned)s->lim_la) & (LIM_N - 1);
+    s->lim_dly[w * 2] = x[0];
+    s->lim_dly[w * 2 + 1] = x[1];
+    s->lim_w++;
+    x[0] = s->lim_dly[r * 2] * s->lim_g;
+    x[1] = s->lim_dly[r * 2 + 1] * s->lim_g;
+}
+
 void synth_process(Synth *s, const float *inA, const float *inB, float *out, int frames)
 {
     const float fs = s->fs;
@@ -1495,43 +1524,15 @@ void synth_process(Synth *s, const float *inA, const float *inB, float *out, int
                 x[1] = mid - side;
             }
 
-            /* DC blocker: radio streams and effects can carry a slow offset that only eats headroom */
-            for (int c = 0; c < 2; c++) {
-                float y = x[c] - s->dc_x[c] + dc_r * s->dc_y[c];
-                s->dc_x[c] = x[c];
-                s->dc_y[c] = y;
-                x[c] = y;
-            }
-
-            /* leveller: brings the mix toward a steady loudness (-6 .. +9.5 dB), slow enough not to pump; Auto
-             * Level sets how much of it is applied */
-            float e = 0.5f * (x[0] * x[0] + x[1] * x[1]);
-            s->lev_env += (e - s->lev_env) * 0.0005f;
-            if (s->lev_env > 1e-6f) {
-                float target = 0.18f / sqrtf(s->lev_env);
-                target = target < 0.5f ? 0.5f : target > 3.0f ? 3.0f : target;
-                float coef = target < s->lev_gain ? 0.0002f : 0.00002f; /* down in ~0.1 s, up in ~1 s */
-                s->lev_gain += (target - s->lev_gain) * coef;
-            }
+            /* output: DC blocker, leveller, then auto level, volume and the limiter's push into the limiter */
+            dc_block(s, x, dc_r);
+            leveller_track(s, x);
             s->s_vol += (vol_t - s->s_vol) * gate_k;
             s->lim_pre += (pre_t - s->lim_pre) * gate_k;
             float in_g = lev_apply * s->s_vol * s->lim_pre;
             x[0] *= in_g;
             x[1] *= in_g;
-
-            /* look-ahead limiter: holds the loudest peak of the last 1.5 ms and eases the gain down to keep it
-             * under the ceiling by the time it comes out of the delay; releases at its own pace */
-            float pk = fmaxf(fabsf(x[0]), fabsf(x[1]));
-            if (pk >= s->lim_hold) { s->lim_hold = pk; s->lim_cnt = s->lim_la; }
-            else if (--s->lim_cnt <= 0) { s->lim_hold = pk; s->lim_cnt = s->lim_la; }
-            float lg_t = s->lim_hold > ceil_lin ? ceil_lin / s->lim_hold : 1.0f;
-            s->lim_g += (lg_t - s->lim_g) * (lg_t < s->lim_g ? s->lim_att : lim_rel);
-            unsigned lw = s->lim_w & (LIM_N - 1), lr = (s->lim_w - (unsigned)s->lim_la) & (LIM_N - 1);
-            s->lim_dly[lw * 2] = x[0];
-            s->lim_dly[lw * 2 + 1] = x[1];
-            s->lim_w++;
-            x[0] = s->lim_dly[lr * 2] * s->lim_g;
-            x[1] = s->lim_dly[lr * 2 + 1] * s->lim_g;
+            limiter_tick(s, x, ceil_lin, lim_rel);
             meter_hit(&mt[MIX_LIMIT], 1.0f - s->lim_g, fall); /* gain reduction */
 
             /* last safety: straight up to 0.95, then a soft knee into full scale, so only true overs are shaped */
