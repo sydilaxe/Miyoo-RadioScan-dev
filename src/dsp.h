@@ -33,6 +33,8 @@ enum {
     /* the cross rhythm: when on, cross-modulation (morph, vocode, ring, FM) comes in only on its pulses */
     P_X_GATE_ON, P_X_GATE_STEPS, P_X_GATE_PULSES, P_X_GATE_ROT,
     P_X_RATE, P_X_LENGTH, P_X_ATTACK, P_X_RELEASE, P_X_CHANCE,
+    /* the cross stutter: ratchets the mix after cross-modulation, at the cross rhythm's rate */
+    P_X_STUT_ON, P_X_STUT_STEPS, P_X_STUT_PULSES, P_X_STUT_ROT, P_X_STUT_RATCHET, P_X_STUT_MODE, P_X_STUT_CHANCE,
     P_COUNT
 };
 
@@ -44,13 +46,19 @@ enum { CELL_GATE, NCELL };
 /* the three rhythms: voice A, voice B and the cross rhythm */
 /* The five rhythms: each voice's gate, the cross rhythm, and each voice's stutter (ratchets on the steps it marks,
  * running at its voice's rate). */
-enum { SEQ_A, SEQ_B, SEQ_X, SEQ_SA, SEQ_SB, SEQ_COUNT };
-#define STUT_PARAM(osc, field) (P_A_STUT_ON + (osc) * OSC_STRIDE + (field)) /* field 0 on, 1 steps, 2 pulses, 3 rotate */
-#define SEQ_VOICE(seq) ((seq) == SEQ_SA ? 0 : (seq) == SEQ_SB ? 1 : (seq)) /* SEQ_X: 2 (no voice) */
-#define SEQ_PARAM(seq, field) ((seq) == SEQ_X ? P_X_GATE_ON + (field) : \
-                               (seq) >= SEQ_SA ? STUT_PARAM((seq) - SEQ_SA, field) : CELL_PARAM(seq, CELL_GATE, field))
-#define SEQ_SHAPE(seq, p) ((seq) == SEQ_X ? P_X_##p : P_A_##p + SEQ_VOICE(seq) * OSC_STRIDE) /* RATE, LENGTH, ... */
-enum { STUT_REPEAT, STUT_REVERSE, STUT_RANDOM };
+enum { SEQ_A, SEQ_B, SEQ_X, SEQ_SA, SEQ_SB, SEQ_SX, SEQ_COUNT };
+/* which of A (0), B (1) or cross (SEQ_X) a rhythm belongs to */
+#define SEQ_VOICE(seq) ((seq) >= SEQ_SA ? (seq) - SEQ_SA : (seq))
+/* a stutter field (ON, STEPS, PULSES, ROT, RATCHET, MODE, CHANCE) of voice 0, 1 or SEQ_X */
+#define STUT_FIELD(v, F) ((v) == SEQ_X ? P_X_STUT_##F : P_A_STUT_##F + (v) * OSC_STRIDE)
+#define STUT_PARAM(v, field) (STUT_FIELD(v, ON) + (field)) /* field 0 on, 1 steps, 2 pulses, 3 rotate */
+#define SEQ_PARAM(seq, field) ((seq) >= SEQ_SA ? STUT_PARAM(SEQ_VOICE(seq), field) : \
+                               (seq) == SEQ_X ? P_X_GATE_ON + (field) : CELL_PARAM(seq, CELL_GATE, field))
+#define SEQ_SHAPE(seq, p) (SEQ_VOICE(seq) == SEQ_X ? P_X_##p : P_A_##p + SEQ_VOICE(seq) * OSC_STRIDE) /* RATE, LENGTH, ... */
+/* stutter modes: REPEAT the step's first slice; REVERSE every other ratchet; RANDOM count and direction;
+ * PITCH each ratchet up (or down) the scale; DROPOUT some ratchets to silence; SCATTER fragments of a latched
+ * sample at random places, directions and octaves (a grab re-latches) */
+enum { STUT_REPEAT, STUT_REVERSE, STUT_RANDOM, STUT_PITCH, STUT_DROPOUT, STUT_SCATTER };
 
 enum { OSC_LIVE, OSC_LOOP, OSC_WAVE, OSC_GRAIN };
 enum { FOCUS_ALL, FOCUS_VOICE, FOCUS_MUSIC };
@@ -116,7 +124,7 @@ float synth_cell_flash(const Synth *s, int osc, int cell);  /* 1 on a hit, fadin
 int synth_seq_step(const Synth *s, int seq);           /* current step of SEQ_A, SEQ_B or SEQ_X */
 float synth_seq_flash(const Synth *s, int seq);
 float synth_cross_gate(const Synth *s);                /* how open the cross rhythm is now, 0..1 */
-int synth_stutter_active(const Synth *s, int osc);     /* ratchets on this step (0 = none) */
+int synth_stutter_active(const Synth *s, int v);       /* ratchets on this step (0 = none); v: 0, 1 or SEQ_X */
 float synth_gate_value(const Synth *s, int osc);       /* how open the voice is now, 0..1 */
 float synth_speechness(const Synth *s, int osc);       /* 0 music .. 1 speech */
 int synth_voice_state(const Synth *s, int osc);        /* VS_* */

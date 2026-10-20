@@ -988,17 +988,17 @@ static void text_halo(int cx, int y, const char *s, Uint32 col)
 
 static const char *seq_name(int q)
 {
-    static const char *const names[SEQ_COUNT] = {"A", "B", "cross", "A stutter", "B stutter"};
+    static const char *const names[SEQ_COUNT] = {"A", "B", "cross", "A stutter", "B stutter", "cross stutter"};
     return names[q];
 }
-static Uint32 seq_col(int q) { return q == SEQ_X ? C_TEXT : osc_col(SEQ_VOICE(q)); }
+static Uint32 seq_col(int q) { return SEQ_VOICE(q) == SEQ_X ? C_TEXT : osc_col(SEQ_VOICE(q)); }
 
 /* a stutter rhythm, drawn geometrically: its pulses joined into a polygon, which lights up when a step ratchets */
-static void draw_stut_ring(int o, int cx, int cy, int r)
+static void draw_stut_ring(int o, int cx, int cy, int r) /* o: voice 0, 1 or SEQ_X */
 {
     const float *p = synth_params(syn);
     int q = SEQ_SA + o;
-    Uint32 col = osc_col(o);
+    Uint32 col = seq_col(q);
     int on = (int)p[STUT_PARAM(o, 0)], steps = (int)p[STUT_PARAM(o, 1)];
     int pulses = (int)p[STUT_PARAM(o, 2)], rot = (int)p[STUT_PARAM(o, 3)];
     float fl = on ? synth_seq_flash(syn, q) : 0;
@@ -1024,11 +1024,11 @@ static void draw_stut_ring(int o, int cx, int cy, int r)
         if (now) circle(dx, dy, 6, C_TEXT);
     }
     char t[8];
-    static const char *const mk[] = {"", "<", "?"};
-    if (on) snprintf(t, sizeof t, "x%d%s", (int)p[P_A_STUT_RATCHET + o * OSC_STRIDE], mk[(int)p[P_A_STUT_MODE + o * OSC_STRIDE]]);
+    static const char *const mn[] = {"repeat", "reverse", "random", "pitch", "dropout", "scatter"};
+    if (on) snprintf(t, sizeof t, "x%d", (int)p[STUT_FIELD(o, RATCHET)]);
     else snprintf(t, sizeof t, "off");
-    int lx = o ? cx - r - 34 : cx + r + 34; /* beside the ring, toward the middle, so the shape stays clear */
-    text_halo(lx, cy - 18, "stut", on ? C_DIM : C_PANEL2);
+    int lx = o == 1 ? cx - r - 44 : cx + r + 44; /* beside the ring, so the shape stays clear */
+    text_halo(lx, cy - 18, on ? mn[(int)p[STUT_FIELD(o, MODE)]] : "stutter", on ? C_DIM : C_PANEL2);
     text_halo(lx, cy, t, on ? (fl > 0.3f ? C_TEXT : C_DIM) : C_PANEL2);
 }
 
@@ -1228,9 +1228,9 @@ static void draw_centre(int cx, int cy)
         fx[n].amt = p[P_CONVERSE]; fx[n].now = fx[n].amt; fx[n].col = f == 1 ? C_AMBER : C_LEAF;
         snprintf(fx[n++].what, sizeof fx[0].what, "%c talks, %c waits", f == 1 ? 'B' : 'A', f == 1 ? 'A' : 'B');
     }
-    int y = cy + CENTRE_R + 12, bx = cx - 92;
+    int y = cy + CENTRE_R + 8, bx = cx - 92;
     if (n == 0) { text_center(cx, y, "no cross-mod", C_PANEL2, 0); return; }
-    for (int i = 0; i < n && i < 4; i++, y += 20) {
+    for (int i = 0; i < n && i < 3; i++, y += 17) {
         fill(bx, y + 6, 36, 6, C_PANEL);
         fill(bx, y + 6, (int)(36 * fminf(fx[i].amt, 1.0f)), 6, mix_col(C_PANEL, fx[i].col, 0.35f)); /* set */
         fill(bx, y + 6, (int)(36 * fminf(fx[i].now, 1.0f)), 6, fx[i].col);                          /* now */
@@ -1255,6 +1255,7 @@ static void draw_play(void)
         int cx = o ? VOICE_BX : VOICE_AX;
         draw_voice_dots(cx, VOICE_Y + VOICE_R + 12, o);
         draw_stut_ring(o, cx, STUT_Y, STUT_R);
+        if (o == 0) draw_stut_ring(SEQ_X, 320, STUT_Y + 26, 24); /* under the centre: the mix after cross / morph */
         text_center(cx, STUT_Y + STUT_R + 14, osc_station_name(o), C_TEXT, 19);
         char line_[256];
         osc_status_line(o, line_, sizeof line_);
@@ -1602,7 +1603,7 @@ static void do_grab(int osc)
 }
 
 /* PLAY: the selected rhythm's voice, or both when the cross rhythm is selected */
-static int play_voice(void) { return ui.cell == SEQ_X ? -1 : SEQ_VOICE(ui.cell); }
+static int play_voice(void) { return SEQ_VOICE(ui.cell) == SEQ_X ? -1 : SEQ_VOICE(ui.cell); }
 
 static void hop(int o)
 {
@@ -1653,12 +1654,12 @@ static void cell_say(int q)
     char rate[24];
     param_format_ctx(SEQ_SHAPE(q, RATE), p, rate, sizeof rate);
     if (q >= SEQ_SA) {
-        int o = q - SEQ_SA;
+        int o = SEQ_VOICE(q);
         char mode[16];
-        param_format_ctx(P_A_STUT_MODE + o * OSC_STRIDE, p, mode, sizeof mode);
+        param_format_ctx(STUT_FIELD(o, MODE), p, mode, sizeof mode);
         if (!(int)p[SEQ_PARAM(q, 0)]) toast("%s off", seq_name(q));
         else toast("%s  E(%d,%d) >%d  x%d %s", seq_name(q), (int)p[SEQ_PARAM(q, 2)], (int)p[SEQ_PARAM(q, 1)],
-                   (int)p[SEQ_PARAM(q, 3)], (int)p[P_A_STUT_RATCHET + o * OSC_STRIDE], mode);
+                   (int)p[SEQ_PARAM(q, 3)], (int)p[STUT_FIELD(o, RATCHET)], mode);
         return;
     }
     if (!(int)p[SEQ_PARAM(q, 0)]) toast(q == SEQ_X ? "cross rhythm off (cross always on)" : "%s rhythm off (always open)", seq_name(q));
@@ -1676,7 +1677,7 @@ static void cell_fix(int q)
 
 static void cell_button(int b)
 {
-    static const int order[SEQ_COUNT] = {SEQ_A, SEQ_SA, SEQ_X, SEQ_SB, SEQ_B}; /* left to right on screen */
+    static const int order[SEQ_COUNT] = {SEQ_A, SEQ_SA, SEQ_X, SEQ_SX, SEQ_SB, SEQ_B}; /* left to right on screen */
     int q = ui.cell;
     int on = SEQ_PARAM(q, 0), steps = SEQ_PARAM(q, 1), pulses = SEQ_PARAM(q, 2), rot = SEQ_PARAM(q, 3);
     int st = (int)synth_get_param(syn, steps);
@@ -1692,8 +1693,8 @@ static void cell_button(int b)
         }
         if (b == B_A) { transport_toggle(); return; }
         if (q >= SEQ_SA && (b == B_X || b == B_Y || b == B_B)) { /* stutter: ratchets and mode */
-            int o = q - SEQ_SA;
-            int id = b == B_B ? P_A_STUT_MODE + o * OSC_STRIDE : P_A_STUT_RATCHET + o * OSC_STRIDE;
+            int o = SEQ_VOICE(q);
+            int id = b == B_B ? STUT_FIELD(o, MODE) : STUT_FIELD(o, RATCHET);
             if (b == B_B) synth_set_param(syn, id, param_adjust(id, synth_get_param(syn, id), 1, 0));
             else synth_set_param(syn, id, synth_get_param(syn, id) + (b == B_X ? 1 : -1));
             synth_set_param(syn, on, 1);
