@@ -21,7 +21,7 @@
 
 #define VOICE_FIELDS(X)                                                                                       \
     P_##X##_STATION, P_##X##_MODE, P_##X##_TUNE, P_##X##_SIZE, P_##X##_TEXTURE, P_##X##_DIR, P_##X##_FOCUS,     \
-    P_##X##_LEVEL, P_##X##_PAN, P_##X##_DRIVE, P_##X##_OSC, P_##X##_OSC_MIX,                                    \
+    P_##X##_LEVEL, P_##X##_MUTE, P_##X##_PAN, P_##X##_DRIVE, P_##X##_OSC, P_##X##_OSC_MIX,                                    \
     RHYTHM_FIELDS(X)
 
 enum {

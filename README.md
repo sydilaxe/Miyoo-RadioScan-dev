@@ -53,6 +53,7 @@ a wavefolder, echo and space.
   - **Bass** and **treble** shelves.
   - **Drive** (warm saturation), **fold**, and **crush** (fewer bits, lower sample rate).
   - **Echo** (a dotted-eighth ping-pong), **space** (reverb) and **stereo width**.
+  - **Mute** for each voice (L2 + B on PLAY, A on the MIX page); it fades rather than cuts.
   - **Volume**, a **limiter**, and a leveller that keeps the overall loudness steady so the radio comes through
     clearly.
 - **Mix.** One page of faders with live meters: each voice's level and drive, how loud each effect comes back
@@ -132,7 +133,7 @@ ring is outlined, and every change shows its pattern briefly, like `A  E(5,8) >2
 | hold L2 + up / down | steps |
 | hold L2 + left / right | rate: jump between 1/4, 1/8, 1/16 and 1/32 (right = faster; every rate is on the RHYTHM page) |
 | hold L2 + Y / X | gate length shorter / longer (a stutter: fewer / more ratchets) |
-| hold L2 + B | a stutter's mode: repeat, reverse, random, pitch, dropout, scatter |
+| hold L2 + B | mute / unmute the selected voice (on a stutter ring: its mode) |
 | hold L2 + A | start / stop the rhythms (stopped, voices with a rhythm on are quiet; start begins on the downbeat) |
 | tap L2 | grab a fresh slice for the selected voice (both voices when the cross rhythm is selected) |
 | hold R2 + D-pad | up/down: filter brighter / darker; left/right: morph toward A / B |
@@ -157,8 +158,8 @@ ring is outlined, and every change shows its pattern briefly, like `A  E(5,8) >2
 
 **MIX page:** faders in four groups: VOICE A and VOICE B (a level fader with a drive knob under it), EFFECTS
 (cross, shape, echo and space return levels) and MASTER (limiter, volume). Left / Right step through the controls
-(each voice's drive knob comes right after its fader), Up / Down set the selected one (hold B for fine steps), and
-Y puts it back to its default. Levels are shown in dB; the tick on each track is unity
+(each voice's drive knob comes right after its fader), Up / Down set the selected one (hold B for fine steps),
+A mutes or unmutes the selected voice, and Y puts a control back to its default. Levels are shown in dB; the tick on each track is unity
 (0 dB), and faders go up to +6 dB. Each meter shows its signal after the fader; the limiter's meter shows
 how much it is turning the sound down. An effect's return level sets how loud it comes back, while its amount on
 the ENGINE page still sets its character (echo feedback, reverb length, how hard the folder works). The limiter
@@ -261,6 +262,12 @@ The engine runs at 48 kHz. On the desktop it takes about 1–3% of one 2.1 GHz X
 the heaviest). That suggests roughly 10–25% of one Cortex-A7 core on the Mini Plus, plus a few percent for each MP3 decoder,
 leaving plenty of headroom on the dual-core chip. Denormals are flushed to zero in the audio thread so long
 reverb tails stay cheap.
+
+## No clicks
+
+Every change that could jump is smoothed over a few milliseconds: rhythm gates close before their step ends (so a
+LOOP restarts from silence), stutter ratchets and the return from a stutter fade, scatter crossfades in from the
+live sound, levels and mutes glide, and a station fades in and out when it starts, changes or runs dry.
 
 ## Limitations
 

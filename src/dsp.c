@@ -66,6 +66,7 @@ int euclid_hit(int steps, int pulses, int rotate, int step)
     [P_##X##_DIR] = {x "_dir", "Direction", PAGE_VOICES, 0, 2, 0, 1, 0, "", directions},                        \
     [P_##X##_FOCUS] = {x "_focus", "Focus", PAGE_VOICES, 0, 2, 0, 1, 0, "", focuses},                            \
     [P_##X##_LEVEL] = {x "_level", "Level", PAGE_MIX, 0, 2, lvl, 0.02f, 0, "lvl", NULL},                       \
+    [P_##X##_MUTE] = {x "_mute", "Mute", PAGE_MIX, 0, 1, 0, 1, 0, "", offon},                                \
     [P_##X##_PAN] = {x "_pan", "Pan", PAGE_VOICES, -1, 1, pan, 0.05f, 0, "pan", NULL},                           \
     [P_##X##_DRIVE] = {x "_drive", "Drive", PAGE_MIX, 0, 1, 0, 0.02f, 0, "", NULL},                              \
     [P_##X##_OSC] = {x "_osc", "Oscillator", PAGE_VOICES, 0, 4, 0, 1, 0, "", osc_waves},                         \
@@ -284,6 +285,7 @@ typedef struct {
     /* SCATTER: a latched sample */
     float *latch;
     int latch_len, latched;
+    int tail;             /* samples left of the fade back in after a stutter step */
 } Stut;
 
 /* a rhythm: where its gate is, how open it is, and its stutter */
@@ -358,6 +360,7 @@ struct Synth {
     float lim_env, lim_rel;    /* master limiter: peak envelope and its release coefficient */
     Rhythm rh[3];              /* voice A, voice B and the cross stage (SEQ_X) */
     float flash_fall;          /* per-block decay of the rhythm flashes */
+    float gate_k;              /* gate smoothing per sample: ~2 ms, so no gate change clicks */
     float win[WIN_N + 1];
     float tap[TAP_COUNT][TAP_LEN];
     unsigned tap_w;
@@ -440,6 +443,7 @@ Synth *synth_create(int sample_rate)
     s->meter_fall = expf(-1.0f / (0.3f * s->fs));
     s->lim_rel = expf(-1.0f / (0.08f * s->fs));
     s->flash_fall = expf(-BLOCK / (0.15f * s->fs));
+    s->gate_k = 1.0f - expf(-1.0f / (0.002f * s->fs));
     s->dly_time_s = 0.3f * s->fs;
     bank_setup(s, 13);
     return s;
@@ -578,7 +582,7 @@ static int dice_excluded(int id)
 {
     int o = osc_of(id);
     int f = o >= 0 ? osc_field(id) : id;
-    return f == P_A_STATION || f == P_A_FOCUS || f == P_A_DRIVE || id == P_VOLUME || id == P_BPM || id == P_SYNC || id == P_ROOT ||
+    return f == P_A_STATION || f == P_A_FOCUS || f == P_A_DRIVE || f == P_A_MUTE || id == P_VOLUME || id == P_BPM || id == P_SYNC || id == P_ROOT ||
            (id >= P_CROSS_LEVEL && id <= P_LIMIT); /* the effect returns stay where the player set them */
 }
 
@@ -915,6 +919,8 @@ static void vad_tick(Vad *v, float m)
 
 /* ------------------------------------------------------------------ rhythm */
 
+#define STUT_FADE_S 0.002f
+
 static inline float step_seconds(const Synth *s, int rate) { return rate_beats[rate] * 60.0f / s->p[P_BPM]; }
 
 /* A new step for a rhythm's stutter (v: voice 0, 1 or SEQ_X): does this step ratchet? */
@@ -975,15 +981,23 @@ static float euclid_gate(Synth *s, int v, double beat, int *new_hit)
         r->hit = on && euclid_hit(steps, (int)p[RHYTHM_P(v, GATE_PULSES)], (int)p[RHYTHM_P(v, GATE_ROT)], r->idx) &&
                  rnd01(s) < p[RHYTHM_P(v, CHANCE)];
         if (r->hit) { r->flash = 1; *new_hit = 1; }
+        int was = r->st.n > 0;
         stut_step(s, &r->st, v, step, step_s);
+        if (was) r->st.tail = (int)(STUT_FADE_S * s->fs); /* the last ratchet faded out: fade the sound back in */
     }
     if (!on) return 1.0f;
     if (!s->running || !r->hit) return 0.0f; /* stopped: a rhythm that is on stays closed */
     float t = (float)(sp - step), len = p[RHYTHM_P(v, LENGTH)];
-    float att = p[RHYTHM_P(v, ATTACK)] * len, min_att = 0.004f / step_s; /* never faster than 4 ms */
+    float min_att = 0.004f / step_s; /* never faster than 4 ms */
+    /* close at least 8 ms before the step ends, so the next pulse (and a LOOP's restart) starts from silence */
+    float end = 1.0f - 2 * min_att;
+    if (len > end - min_att) len = end - min_att;
+    if (len < min_att) len = min_att;
+    float att = p[RHYTHM_P(v, ATTACK)] * len;
     if (att < min_att) att = min_att;
     if (att > len) att = len;
     float rel = p[RHYTHM_P(v, RELEASE)] * (1.0f - len) + min_att;
+    if (len + rel > end) rel = end - len > min_att ? end - len : min_att;
     float g;
     if (t < att) g = t / att;
     else if (t < len) g = 1;
@@ -1025,17 +1039,26 @@ static inline void stutter_tick(Synth *s, Stut *st, float *x)
     st->buf[w * 2] = x[0];
     st->buf[w * 2 + 1] = x[1];
     st->w++;
-    if (!st->n) return;
-    if (!s->running) { st->n = 0; return; }
+    float fade = STUT_FADE_S * s->fs, back = 1.0f; /* 2 ms edges on every ratchet, and coming back after */
+    if (st->tail > 0) back = 1.0f - st->tail-- / fade;
+    if (st->n && (!s->running || st->t >= st->seg * st->n)) { /* stopped, or the step ran long (tempo change) */
+        st->n = 0;
+        st->tail = (int)fade;
+        back = 0;
+    }
+    if (!st->n) { x[0] *= back; x[1] *= back; return; }
     float seg = st->seg, t = st->t;
     int k = (int)(t / seg);
     float pos = t - k * seg;
-    if (k >= st->n) { st->n = 0; return; } /* the step ran long (tempo change): let go */
+    if (k >= st->n) k = st->n - 1; /* rounding at the very end of the step */
     if (k != st->k) stut_ratchet(s, st, k);
-    float fade = 0.002f * s->fs, e = 1.0f; /* 2 ms edges on every ratchet */
-    if (pos < fade && (k > 0 || st->mode == STUT_SCATTER)) e = pos / fade;
+    float e = back;
+    /* scatter's first fragment crossfades from the live sound (unless a stutter step just ended in silence) */
+    int from_live = k == 0 && pos < fade && back >= 1.0f && st->mode == STUT_SCATTER;
+    float live[2] = {x[0], x[1]};
+    if (pos < fade && (k > 0 || (st->mode == STUT_SCATTER && !from_live))) e = fminf(e, pos / fade);
     if (seg - pos < fade) e = fminf(e, (seg - pos) / fade);
-    if (st->k_mute) e = 0;
+    if (st->k_mute) e = k == 0 && pos < fade ? fminf(e, 1.0f - pos / fade) : 0; /* a dropped first ratchet fades away */
     if (st->mode == STUT_SCATTER && st->latched) { /* play from the latched sample */
         float rp = st->k_rev ? seg - 1 - pos : pos;
         float fp = st->k_off + rp * st->k_rate;
@@ -1045,10 +1068,11 @@ static inline void stutter_tick(Synth *s, Stut *st, float *x)
         int i1 = i0 + 1 == len ? 0 : i0 + 1;
         float fr = fp - floorf(fp);
         for (int c = 0; c < 2; c++) x[c] = st->latch[i0 * 2 + c] + fr * (st->latch[i1 * 2 + c] - st->latch[i0 * 2 + c]);
+        if (from_live)
+            for (int c = 0; c < 2; c++) x[c] = live[c] + (pos / fade) * (x[c] - live[c]);
     } else if (k > 0 || st->k_rate != 1.0f) { /* replay the step's first slice */
         float rp = st->k_rev ? seg - 1 - pos : pos;
-        float fp = rp * st->k_rate; /* a faster ratchet (under 2x) loops inside its slice */
-        if (fp >= seg) fp -= seg;
+        float fp = rp * st->k_rate; /* a faster ratchet (under 2x) reads on past its slice, which is recorded by now */
         if (k == 0 && fp >= pos) fp = pos;      /* the first ratchet can only play what has been heard */
         unsigned r0 = (st->mark + (unsigned)fp) & (STUT_N - 1), r1 = (r0 + 1) & (STUT_N - 1);
         float fr = fp - floorf(fp);
@@ -1172,15 +1196,15 @@ void synth_process(Synth *s, const float *inA, const float *inB, float *out, int
         osc_control(s, 1, n);
 
         s->pitch += ((float)s->last_note - s->pitch) * (1.0f - expf(-n / (0.02f * fs))); /* short glide */
-        float ratio[2], freq[2];
+        float ratio[2], freq[2], lvl_target[2]; /* level (0 when muted), followed sample by sample over ~2 ms */
         for (int o = 0; o < 2; o++) {
             float semi = s->pitch + s->p[P_A_TUNE + o * OSC_STRIDE];
             ratio[o] = exp2f((semi - 60.0f) / 12.0f); /* C4 plays a slice at its own speed */
             freq[o] = 440.0f * exp2f((semi - 69.0f) / 12.0f);
-            float t = s->p[P_A_LEVEL + o * OSC_STRIDE];
-            s->s_lvl[o] += (t - s->s_lvl[o]) * 0.15f;
+            lvl_target[o] = (int)s->p[P_A_MUTE + o * OSC_STRIDE] ? 0 : s->p[P_A_LEVEL + o * OSC_STRIDE];
         }
         const float flash_fall = n == BLOCK ? s->flash_fall : expf(-n / (0.15f * fs));
+        const float gate_k = s->gate_k;
         for (int v = 0; v < 3; v++) {
             s->rh[v].flash *= flash_fall;
             s->rh[v].st.flash *= flash_fall;
@@ -1276,7 +1300,7 @@ void synth_process(Synth *s, const float *inA, const float *inB, float *out, int
             Rhythm *xr = &s->rh[SEQ_X];
             int xnh;
             float xg = euclid_gate(s, SEQ_X, beat, &xnh);
-            xr->gate += (xg - xr->gate) * 0.04f;
+            xr->gate += (xg - xr->gate) * gate_k;
             const float xgate = xr->gate;
             float x[2] = {0, 0}, vm[2] = {0, 0};
             /* the modulating voice runs first so it can bend the other one's pitch (FM) */
@@ -1290,7 +1314,7 @@ void synth_process(Synth *s, const float *inA, const float *inB, float *out, int
                 float gg = rhythm_eval(s, o, beat);
                 Rhythm *rh = &s->rh[o];
                 stutter_tick(s, &rh->st, os->out);
-                rh->gate += (gg - rh->gate) * 0.04f;
+                rh->gate += (gg - rh->gate) * gate_k;
                 float vl = os->out[0] * rh->gate, vr = os->out[1] * rh->gate;
                 /* speech-band activity of this voice (before ducking), for converse */
                 float mono = 0.5f * (vl + vr);
@@ -1306,6 +1330,7 @@ void synth_process(Synth *s, const float *inA, const float *inB, float *out, int
                     vl = fast_tanh(vl * vd_gain[o]) * vd_comp[o];
                     vr = fast_tanh(vr * vd_gain[o]) * vd_comp[o];
                 }
+                s->s_lvl[o] += (lvl_target[o] - s->s_lvl[o]) * gate_k;
                 vm[o] = 0.5f * (vl + vr) * s->s_lvl[o];
                 s->tap[o ? TAP_B : TAP_A][tw] = 0.5f * (vl + vr);
                 os->level += (fabsf(vl) + fabsf(vr) - os->level) * 0.001f;

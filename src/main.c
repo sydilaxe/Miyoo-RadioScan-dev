@@ -726,6 +726,7 @@ static void draw_scan_results(void)
 /* ================================================================== shared widgets */
 
 static Uint32 osc_col(int o) { return o ? C_AMBER : C_LEAF; }
+static int voice_muted(int o) { return (int)synth_get_param(syn, P_A_MUTE + o * OSC_STRIDE); }
 
 static void osc_status_line(int o, char *buf, int n)
 {
@@ -1157,6 +1158,7 @@ static void draw_voice(int o, int cx, int cy, int R)
     char mt[16];
     snprintf(mt, sizeof mt, "%s%s", mn[mode], mode == OSC_LIVE || dir == DIR_FORWARD ? "" : dir == DIR_REVERSE ? " rev" : " <>");
     text_halo(cx, cy - 20, mt, C_TEXT);
+    if (voice_muted(o)) text_halo(cx, cy - 44, "muted", C_RUST);
     disc(cx, cy + 4, 4, state_col(o));
     text_halo(cx, cy + 12, t, (int)p[SEQ_PARAM(o, 0)] ? C_DIM : C_PANEL2);
     if ((int)p[SEQ_PARAM(o, 0)]) {
@@ -1303,7 +1305,7 @@ static void draw_play(void)
     int stut = ui.cell >= SEQ_SA;
     const char *hint = ui.held[B_R2] ? "dpad: filter / morph   X B: fold   Y A: space" :
                        ui.held[B_L2] ? (stut ? "^v steps  <> rate  Y X ratchets  B mode  A start/stop" :
-                                               "^v steps  <> rate  Y X length  A start/stop") :
+                                               "^v steps  <> rate  Y X length  B mute  A start/stop") :
                                        "<> rhythm  ^v pulses  A on/off  B fewer  X rotate  Y new";
     text_center(320, 344, hint, C_DIM, 0);
     text(16, 455, "L1/R1 pitch  L2 grab  SELECT tap  START edit  MENU x2 quit", C_PANEL2, 0);
@@ -1489,7 +1491,8 @@ static void draw_mix_fader(const MixStrip *m, int cx, int sel, const float *p)
     fill(tx - 1, MIX_TOP, 3, h, C_PANEL2);
     float f = param_frac(m->id, p[m->id]);
     int ty = MIX_BOT - (int)(f * h);
-    fill(tx - 1, ty, 3, MIX_BOT - ty, sel ? col : mix_col(C_PANEL2, col, 0.6f));
+    int muted = (m->id == P_A_LEVEL || m->id == P_B_LEVEL) && voice_muted(m->id == P_B_LEVEL);
+    fill(tx - 1, ty, 3, MIX_BOT - ty, muted ? C_RUST : sel ? col : mix_col(C_PANEL2, col, 0.6f));
     float unity = !strcmp(param_info[m->id].unit, "lvl") ? param_frac(m->id, 1.0f) :
                   m->id == P_VOLUME ? param_frac(m->id, 0.0f) : -1;
     if (unity >= 0) { int uy = MIX_BOT - (int)(unity * h); fill(tx - 9, uy, 4, 1, C_DIM); }
@@ -1511,7 +1514,7 @@ static void draw_mix_fader(const MixStrip *m, int cx, int sel, const float *p)
     }
     char v[24];
     mix_short_value(m->id, v, sizeof v);
-    text_center(cx, MIX_BOT + 8, v, sel ? C_TEXT : C_DIM, 7);
+    text_center(cx, MIX_BOT + 8, muted ? "muted" : v, muted ? C_RUST : sel ? C_TEXT : C_DIM, 7);
 }
 
 static void draw_mix_knob(const MixStrip *m, int cx, int sel, const float *p)
@@ -1557,8 +1560,8 @@ static void draw_mix_page(void)
     param_format_ctx(cur->id, p, full, sizeof full);
     snprintf(line_, sizeof line_, "%s %s  %s", mix_group_names[cur->group], cur->name, full);
     for (char *c = line_; *c && c < line_ + 8; c++) *c = (char)tolower((unsigned char)*c);
-    text(24, 340, line_, C_TEXT, 30);
-    text_right(624, 340, "<> choose  ^v set  hold B fine", C_PANEL2, 0);
+    text(24, 340, line_, C_TEXT, 26);
+    text_right(624, 340, "<> ^v  A mute  hold B fine", C_PANEL2, 0);
 }
 
 /* the parameter selected on a list page (VOICES, RHYTHM, ENGINE), or -1 */
@@ -1671,6 +1674,14 @@ static void transport_toggle(void)
     toast(run ? "rhythms playing" : "rhythms stopped (voices with a rhythm are quiet)");
 }
 
+/* mute or unmute a voice (it fades over a few ms) */
+static void toggle_mute(int o)
+{
+    synth_set_param(syn, P_A_MUTE + o * OSC_STRIDE, !voice_muted(o));
+    toast(voice_muted(o) ? "voice %c muted" : "voice %c back", 'A' + o);
+    ui.dirty_settings = 1;
+}
+
 static void cell_say(int q)
 {
     const float *p = synth_params(syn);
@@ -1715,6 +1726,11 @@ static void cell_button(int b)
             synth_set_param(syn, r, (float)next);
         }
         if (b == B_A) { transport_toggle(); return; }
+        if (q < SEQ_SA && b == B_B) { /* a voice's ring: mute it */
+            if (q == SEQ_X) toast("select voice A or B to mute it");
+            else toggle_mute(q);
+            return;
+        }
         if (q >= SEQ_SA && (b == B_X || b == B_Y || b == B_B)) { /* stutter: ratchets and mode */
             int o = SEQ_VOICE(q);
             int id = b == B_B ? RHYTHM_P(o, STUT_MODE) : RHYTHM_P(o, STUT_RATCHET);
@@ -1888,6 +1904,10 @@ static void on_press(int b)
         return;
     }
     if (b == B_L2 || b == B_X) do_grab(edit_voice());
+    if (b == B_A && ui.tab == TAB_MIX) { /* mute the voice of the selected control */
+        int g = mix_strips[ui.sel[TAB_MIX]].group;
+        if (g == MG_A || g == MG_B) toggle_mute(g == MG_B);
+    }
     if (b == B_Y && ui.tab == TAB_MIX) { /* back to unity / the default */
         const MixStrip *m = &mix_strips[ui.sel[TAB_MIX]];
         synth_set_param(syn, m->id, param_info[m->id].def);

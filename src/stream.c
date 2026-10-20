@@ -47,7 +47,29 @@ struct Stream {
     /* resampler (audio thread only) */
     double rs_pos;
     int playing_gate;
+    /* declicker (audio thread only): the stream fades in and out over a few ms when it starts, changes station or
+     * runs dry, holding its last sample while it fades out, instead of jumping to or from silence */
+    float gain, last[2];
 };
+
+#define DECLICK_SEC 0.005f
+
+/* fade out[valid..frames) away from the last sample and out[0..valid) in, by the running gain */
+static void declick(Stream *s, float *out, int valid, int frames)
+{
+    float step = 1.0f / (DECLICK_SEC * s->out_rate);
+    for (int i = 0; i < frames; i++) {
+        if (i < valid) {
+            if (s->gain < 1) s->gain = s->gain + step > 1 ? 1 : s->gain + step;
+            s->last[0] = out[i * 2];
+            s->last[1] = out[i * 2 + 1];
+        } else {
+            s->gain = s->gain - step < 0 ? 0 : s->gain - step;
+        }
+        out[i * 2] = s->last[0] * s->gain;
+        out[i * 2 + 1] = s->last[1] * s->gain;
+    }
+}
 
 static void set_status(Stream *s, StreamState st, const char *fmt, ...)
 {
@@ -353,7 +375,7 @@ void stream_read(Stream *s, float *out, int frames)
     unsigned avail = ring_avail(s);
     if (!s->playing_gate && avail > (unsigned)(s->src_rate * PREBUFFER_SEC)) s->playing_gate = 1;
     if (!s->playing_gate) {
-        memset(out, 0, sizeof(float) * frames * 2);
+        declick(s, out, 0, frames);
         return;
     }
     const double step = (double)s->src_rate / s->out_rate;
@@ -375,10 +397,10 @@ void stream_read(Stream *s, float *out, int frames)
     s->rs_pos -= adv;
     __atomic_store_n(&s->ring_r, r + adv, __ATOMIC_RELEASE);
     if (i < frames) {
-        memset(out + i * 2, 0, sizeof(float) * (frames - i) * 2);
         s->playing_gate = 0; /* underrun: rebuffer (no locking in the audio thread) */
         s->underrun = 1;
     }
+    declick(s, out, i, frames);
 }
 
 StreamState stream_state(Stream *s) { return s->state; }
