@@ -58,8 +58,9 @@ The PLAY page is for performing: the two rhythms and the sound, live.
   the voice as it sounds. Five dots underneath show how speech-like the station is.
 - **Rhythm rings.** Each voice wears its rhythm around its rim: coloured pulses, a white ring on the current step,
   and pulses/steps under the engine name. The cross rhythm circles the centre the same way.
-- **Spectrum backdrop.** A soft frequency spectrum of the overall sound behind the circles, in dusk violet, the
-  complement of the voices' green and amber.
+- **Spectrum backdrop.** A soft frequency spectrum of the overall sound behind the circles. Its colour follows
+  frequency, from indigo in the bass through rose in the mids to sky blue in the highs, hues kept apart from the
+  voices' green and amber.
 - **Converse.** The voice holding the floor gets a bright ring.
 - **Centre.** The final sound, with the cross rhythm around it. The dot travelling over the top shows the morph
   position, from A on the left to B on the right. Underneath, each active cross effect is spelled out (like

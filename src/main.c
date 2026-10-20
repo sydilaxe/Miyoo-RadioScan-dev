@@ -940,11 +940,17 @@ static void tap_bands(int tap, float *bands)
     }
 }
 
-/* Soft spectrum of the overall sound behind the circles, mirrored around the middle of the screen, in dusk violet:
- * the complement of the forest greens and ambers, so it reads as the whole mix rather than either voice. */
+/* Soft spectrum of the overall sound behind the circles, mirrored around the middle of the screen. Its colour runs
+ * with frequency, from indigo bass through rose mids to sky-blue highs: hues away from the voices' green and amber,
+ * so it reads as the whole mix rather than either voice. */
+static Uint32 spectrum_col(float t) /* t: 0 lowest band .. 1 highest */
+{
+    static const Uint32 stops[3] = {RGB(118, 92, 214), RGB(206, 102, 168), RGB(118, 192, 232)};
+    return t < 0.5f ? mix_col(stops[0], stops[1], t * 2) : mix_col(stops[1], stops[2], t * 2 - 1);
+}
+
 static void draw_spectrum(void)
 {
-    static const Uint32 C_DUSK = RGB(170, 122, 200);
     static float height[SPEC_BANDS];
     float out[SPEC_BANDS];
     tap_bands(TAP_OUT, out);
@@ -956,7 +962,7 @@ static void draw_spectrum(void)
         height[i] = h > height[i] ? h : height[i] * 0.9f; /* rises fast, falls gently */
         int hp = (int)(height[i] * 130);
         if (hp < 1) continue;
-        Uint32 col = mix_col(C_BG, C_DUSK, 0.10f + 0.16f * height[i]); /* a quiet backdrop */
+        Uint32 col = mix_col(C_BG, spectrum_col((float)i / (SPEC_BANDS - 1)), 0.10f + 0.18f * height[i]); /* a quiet backdrop */
         int x = (int)(i * w);
         fill(x + 1, 240 - hp, (int)w - 2, hp * 2, col);
     }
