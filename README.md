@@ -16,6 +16,9 @@ a wavefolder, echo and space.
   - **WAVE:** a few milliseconds of the stream as a pitched waveform that keeps re-scanning the broadcast.
   - **GRAIN:** a cloud of grains from the last moments of the stream.
 
+  LOOP, WAVE and GRAIN voices can play **forward**, in **reverse**, or **both** (a loop ping-pongs; grains go
+  either way at random). Loops can be up to 2.7 seconds long.
+
   Each voice has its own **level**, **drive** and **pan**. **Focus** can make a voice listen only to speech or only to
   music; either voice can play any station. An optional **oscillator** (sine,
   triangle, saw or square) can be mixed into each voice for a cleaner tone or a carrier for cross-modulation.

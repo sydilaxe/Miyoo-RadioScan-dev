@@ -13,7 +13,7 @@
 #define DSP_H
 
 #define VOICE_FIELDS(X)                                                                                       \
-    P_##X##_STATION, P_##X##_MODE, P_##X##_TUNE, P_##X##_SIZE, P_##X##_TEXTURE, P_##X##_FOCUS, P_##X##_LEVEL, \
+    P_##X##_STATION, P_##X##_MODE, P_##X##_TUNE, P_##X##_SIZE, P_##X##_TEXTURE, P_##X##_DIR, P_##X##_FOCUS, P_##X##_LEVEL, \
     P_##X##_PAN, P_##X##_DRIVE, P_##X##_OSC, P_##X##_OSC_MIX,                                                                             \
     P_##X##_GATE_ON, P_##X##_GATE_STEPS, P_##X##_GATE_PULSES, P_##X##_GATE_ROT,                                 \
     P_##X##_RATE, P_##X##_LENGTH, P_##X##_ATTACK, P_##X##_RELEASE, P_##X##_CHANCE
@@ -46,6 +46,7 @@ enum { SEQ_A, SEQ_B, SEQ_X, SEQ_COUNT };
 
 enum { OSC_LIVE, OSC_LOOP, OSC_WAVE, OSC_GRAIN };
 enum { FOCUS_ALL, FOCUS_VOICE, FOCUS_MUSIC };
+enum { DIR_FORWARD, DIR_REVERSE, DIR_BOTH }; /* BOTH: loops ping-pong, grains go either way */
 enum { CAT_ANY, CAT_VOICE, CAT_MUSIC, CAT_SOUND };
 enum { VS_SILENT, VS_MUSIC, VS_VOICE };
 enum { PAGE_VOICES, PAGE_RHYTHM, PAGE_ENGINE, PAGE_MIX, PAGE_COUNT };

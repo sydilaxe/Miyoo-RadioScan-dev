@@ -13,6 +13,7 @@
 
 static const char *const osc_modes[] = {"LIVE", "LOOP", "WAVE", "GRAIN", NULL};
 static const char *const focuses[] = {"ALL SOUND", "VOICES ONLY", "MUSIC ONLY", NULL};
+static const char *const directions[] = {"FORWARD", "REVERSE", "BOTH", NULL};
 const char *const category_names[] = {"ANY", "VOICE", "MUSIC", "SOUND", NULL};
 static const char *const offon[] = {"OFF", "ON", NULL};
 static const char *const osc_waves[] = {"OFF", "SINE", "TRIANGLE", "SAW", "SQUARE", NULL};
@@ -46,8 +47,9 @@ int euclid_hit(int steps, int pulses, int rotate, int step)
     [P_##X##_STATION] = {x "_station", "Station", PAGE_VOICES, -1, 511, -1, 1, 0, "station", NULL},              \
     [P_##X##_MODE] = {x "_engine", "Engine", PAGE_VOICES, 0, 3, mode, 1, 0, "", osc_modes},                      \
     [P_##X##_TUNE] = {x "_tune", "Pitch", PAGE_VOICES, -24, 24, 0, 1, 0, "st", NULL},                            \
-    [P_##X##_SIZE] = {x "_size", "Size", PAGE_VOICES, 1, 2000, size, 1.08f, 1, "ms", NULL},                      \
+    [P_##X##_SIZE] = {x "_size", "Size", PAGE_VOICES, 1, 2700, size, 1.08f, 1, "ms", NULL},                      \
     [P_##X##_TEXTURE] = {x "_texture", "Texture", PAGE_VOICES, 0, 1, tex, 0.02f, 0, "", NULL},                   \
+    [P_##X##_DIR] = {x "_dir", "Direction", PAGE_VOICES, 0, 2, 0, 1, 0, "", directions},                        \
     [P_##X##_FOCUS] = {x "_focus", "Focus", PAGE_VOICES, 0, 2, 0, 1, 0, "", focuses},                            \
     [P_##X##_LEVEL] = {x "_level", "Level", PAGE_MIX, 0, 2, lvl, 0.02f, 0, "lvl", NULL},                       \
     [P_##X##_PAN] = {x "_pan", "Pan", PAGE_VOICES, -1, 1, pan, 0.05f, 0, "pan", NULL},                           \
@@ -134,6 +136,7 @@ const char *param_label(int id, const float *p)
     static const char *const tex_l[] = {"Crush", "Auto Grab", "Scan Rate", "Density"};
     if (f == P_A_SIZE) return size_l[mode];
     if (f == P_A_TEXTURE) return tex_l[mode];
+    if (f == P_A_DIR) return mode == OSC_LIVE ? "Direction (unused)" : mode == OSC_GRAIN ? "Grain Direction" : "Direction";
     return param_info[id].label;
 }
 
@@ -233,7 +236,7 @@ void param_format_ctx(int id, const float *params, char *buf, int n)
 /* ================================================================== engine */
 
 #define CAP_N (1 << 18)     /* live capture per voice (frames): 5.4 s @ 48 kHz */
-#define SNAP_N (1 << 17)    /* grabbed loop / wavetable (frames) */
+#define SNAP_N (1 << 17)    /* grabbed loop / wavetable (frames): 2.73 s @ 48 kHz, so Size tops out at 2700 ms */
 #define DLY_N (1 << 17)
 #define REV_N 8192
 #define REV_LINES 5
@@ -273,6 +276,7 @@ typedef struct {
     int cur;
     float morph, morph_step;
     double phase;
+    int bounce;           /* DIR_BOTH: playing the loop backwards this time round */
     float timer;
     int want_grab, last_mode;
     int snap_silent;      /* the last grab caught silence (stream not started yet): try again soon */
@@ -592,6 +596,7 @@ void synth_dice(Synth *s, int which)
             s->p[P_A_SIZE + o * OSC_STRIDE] = rand_in(s, lo[m], hi[m], 1);
             s->p[P_A_TUNE + o * OSC_STRIDE] = tunes[(int)(rnd01(s) * 9) % 9];
             if (m == OSC_LIVE && rnd01(s) < 0.7f) s->p[P_A_TEXTURE + o * OSC_STRIDE] = 0;
+            if (rnd01(s) < 0.7f) s->p[P_A_DIR + o * OSC_STRIDE] = DIR_FORWARD; /* reversing stays occasional */
         }
         if (rnd01(s) < 0.4f) s->p[P_TONE] = 0;
         if (rnd01(s) < 0.5f) s->p[P_FOLD] = 0;
@@ -734,15 +739,18 @@ static void osc_tick(Synth *s, int idx, float ratio, float freq)
         int a = o->cur, b = !o->cur;
         int len = o->snap_len[a] > 0 ? o->snap_len[a] : o->snap_len[b];
         if (len <= 0) { o->out[0] = o->out[1] = 0; break; }
+        int dir = (int)p[P_A_DIR];
+        double rp = dir == DIR_REVERSE || (dir == DIR_BOTH && o->bounce) ? 1.0 - o->phase : o->phase;
+        if (rp >= 1.0) rp = 0.999999;
         for (int c = 0; c < 2; c++) {
-            float v = snap_read(o, a, o->phase, c);
-            if (o->morph > 0) v += o->morph * (snap_read(o, b, o->phase, c) - v);
+            float v = snap_read(o, a, rp, c);
+            if (o->morph > 0) v += o->morph * (snap_read(o, b, rp, c) - v);
             o->out[c] = v;
         }
         double inc = (int)p[P_A_MODE] == OSC_LOOP ? ratio / (double)len : freq / s->fs;
         if (inc > 0.5) inc = 0.5;
         o->phase += inc;
-        if (o->phase >= 1.0) o->phase -= floor(o->phase);
+        if (o->phase >= 1.0) { o->phase -= floor(o->phase); o->bounce = !o->bounce; }
         if (o->morph > 0) {
             o->morph += o->morph_step;
             if (o->morph >= 1.0f) { o->morph = 0; o->cur = b; }
@@ -760,9 +768,17 @@ static void osc_tick(Synth *s, int idx, float ratio, float freq)
             for (int g = 0; g < MAX_GRAINS; g++) {
                 Grain *gr = &o->grains[g];
                 if (gr->len) continue;
-                double lead = glen * (ratio > 1 ? ratio : 1) + 4;
-                gr->pos = (double)o->cap_w - lead - rnd01(s) * GRAIN_SPREAD_S * s->fs;
-                gr->rate = ratio;
+                int gdir = (int)p[P_A_DIR];
+                int rev = gdir == DIR_REVERSE || (gdir == DIR_BOTH && rnd01(s) < 0.5f);
+                double back = rnd01(s) * GRAIN_SPREAD_S * s->fs;
+                if (rev) { /* start just behind the newest audio and read backwards, away from it */
+                    gr->pos = (double)o->cap_w - 4 - back;
+                    gr->rate = -ratio;
+                } else {
+                    double lead = glen * (ratio > 1 ? ratio : 1) + 4;
+                    gr->pos = (double)o->cap_w - lead - back;
+                    gr->rate = ratio;
+                }
                 gr->len = glen;
                 gr->age = 0;
                 float pan = (rnd01(s) - 0.5f) * 0.6f;
@@ -900,7 +916,7 @@ static float rhythm_eval(Synth *s, int idx, double beat)
                           &o->cell_flash[CELL_GATE], &nh);
     if (nh) {
         int mode = (int)s->p[P_A_MODE + idx * OSC_STRIDE];
-        if (mode == OSC_LOOP) o->phase = 0;
+        if (mode == OSC_LOOP) { o->phase = 0; o->bounce = 0; }
         if (mode == OSC_GRAIN) o->grain_timer = 0;
     }
     return g;

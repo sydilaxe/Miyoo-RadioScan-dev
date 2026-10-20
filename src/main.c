@@ -1084,7 +1084,10 @@ static void draw_voice(int o, int cx, int cy, int R)
     static const char *const mn[] = {"live", "loop", "wave", "grain"};
     char t[16];
     seq_label(o, t, sizeof t);
-    text_halo(cx, cy - 20, mn[(int)p[P_A_MODE + o * OSC_STRIDE]], C_TEXT);
+    int mode = (int)p[P_A_MODE + o * OSC_STRIDE], dir = (int)p[P_A_DIR + o * OSC_STRIDE];
+    char mt[16];
+    snprintf(mt, sizeof mt, "%s%s", mn[mode], mode == OSC_LIVE || dir == DIR_FORWARD ? "" : dir == DIR_REVERSE ? " rev" : " <>");
+    text_halo(cx, cy - 20, mt, C_TEXT);
     disc(cx, cy + 4, 4, state_col(o));
     text_halo(cx, cy + 12, t, (int)p[SEQ_PARAM(o, 0)] ? C_DIM : C_PANEL2);
     if ((int)p[SEQ_PARAM(o, 0)]) {
