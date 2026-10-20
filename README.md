@@ -54,8 +54,11 @@ a wavefolder, echo and space.
 
 The PLAY page is for performing: the two rhythms and the sound, live.
 
-- **Voice circles (left A, right B).** A faint inner form shows the raw broadcast; a bright outer form shows
-  the voice as it sounds. Five dots underneath show how speech-like the station is.
+- **Voice circles (left A, right B).** Each voice's waveform is wrapped around its circle like a polar
+  oscilloscope, swinging out and in with the signal: faint and small inside for the raw broadcast, bright and wide
+  outside for the voice as it sounds. Each is scaled to its own recent peak, so a quiet station still swings wide,
+  and the outer one opens and closes with the voice's rhythm. Five dots underneath show how speech-like the
+  station is.
 - **Rhythm rings.** Each voice wears its rhythm around its rim: coloured pulses, a white ring on the current step,
   and pulses/steps under the engine name. The cross rhythm circles the centre the same way.
 - **Spectrum backdrop.** A soft frequency spectrum of the overall sound behind the circles. Its colour follows
@@ -68,7 +71,7 @@ The PLAY page is for performing: the two rhythms and the sound, live.
   and, brighter, how much of it the cross rhythm and the MIX return let through right now.
 - **Five circles along the bottom:** *cross → filter → fold → echo → space*. Each grows the more it changes
   the sound.
-- **Abstract forms.** Every form is driven by the sound, not drawn as a waveform:
+- **Abstract forms.** The centre and the five stage circles are driven by the sound rather than drawn as a waveform:
   - Loudness swells the core.
   - Brightness adds petals (3, 5, 8, 13, 21) and spin.
   - Spiky sound sharpens the petals.

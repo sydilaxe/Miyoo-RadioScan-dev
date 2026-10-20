@@ -1006,8 +1006,60 @@ static void seq_label(int q, char *t, int n)
     else snprintf(t, n, "open");
 }
 
-/* a voice: faint bloom of the raw broadcast inside, bright bloom of the voice as it sounds outside,
- * and its rhythm around the rim */
+/* centred text with a dark outline, so it reads over a busy waveform */
+static void text_halo(int cx, int y, const char *s, Uint32 col)
+{
+    for (int dy = -2; dy <= 2; dy++)
+        for (int dx = -2; dx <= 2; dx++)
+            if (dx || dy) text_center(cx + dx, y + dy, s, C_PANEL, 0);
+    text_center(cx, y, s, col, 0);
+}
+
+/* A waveform wrapped around a circle, like a polar oscilloscope: the line swings out and in with the signal.
+ * It is triggered on a rising zero crossing so it holds still on a steady tone, and scaled to its own recent
+ * peak so even a quiet station swings wide. *env keeps that peak between frames. */
+static void draw_polar_wave(int cx, int cy, float base, float swing, int tap, Uint32 col, int thick, float *env)
+{
+    enum { WN = 2048, SPAN = 1024, PTS = 180 };
+    static float buf[WN];
+    synth_tap_read(syn, tap, buf, WN);
+    int start = WN - SPAN;
+    for (int i = WN - SPAN - 1; i > WN - SPAN - 900; i--) /* the latest rising zero crossing with room after it */
+        if (buf[i - 1] < 0 && buf[i] >= 0) { start = i; break; }
+    float pk = 0;
+    for (int i = 0; i < SPAN; i++) pk = fmaxf(pk, fabsf(buf[start + i]));
+    *env = pk > *env ? pk : *env * 0.93f;
+    float g = 1.0f / fmaxf(*env, 0.01f);
+    if (pk < 0.0005f) g = 0; /* silence: a still circle */
+    float v[PTS];
+    for (int k = 0; k < PTS; k++) { /* average each slice so the line is smooth, not aliased */
+        int a = start + k * SPAN / PTS, b = start + (k + 1) * SPAN / PTS;
+        float sum = 0, mx = 0;
+        for (int i = a; i < b; i++) { sum += buf[i]; if (fabsf(buf[i]) > fabsf(mx)) mx = buf[i]; }
+        v[k] = 0.5f * (sum / (b - a)) + 0.5f * mx; /* keep some of the peaks: it should look lively */
+        v[k] *= g;
+        v[k] = v[k] > 1 ? 1 : v[k] < -1 ? -1 : v[k];
+    }
+    for (int k = 0; k < PTS / 10; k++) { /* close the loop smoothly */
+        float t = (float)k / (PTS / 10);
+        v[PTS - 1 - k] = v[PTS - 1 - k] * t + v[0] * (1 - t);
+    }
+    for (int th = 0; th < thick; th++) {
+        int x0 = 0, y0 = 0, xf = 0, yf = 0;
+        for (int k = 0; k <= PTS; k++) {
+            int x, y;
+            polar(cx, cy, base + th + swing * v[k % PTS], (float)k / PTS, &x, &y);
+            if (k) line(x0, y0, x, y, col);
+            else { xf = x; yf = y; }
+            x0 = x;
+            y0 = y;
+        }
+        (void)xf; (void)yf;
+    }
+}
+
+/* a voice: the raw broadcast's waveform faint inside, the voice as it sounds bright outside, and its rhythm
+ * around the rim */
 static void draw_voice(int o, int cx, int cy, int R)
 {
     Uint32 col = osc_col(o);
@@ -1016,15 +1068,17 @@ static void draw_voice(int o, int cx, int cy, int R)
     disc(cx, cy, R, C_PANEL);
     circle(cx, cy, R, mix_col(C_PANEL2, col, gate * synth_osc_level(syn, o) * 2.0f));
     if (synth_floor(syn) == o) { circle(cx, cy, R + 1, col); circle(cx, cy, R + 2, col); } /* converse: has the floor */
-    draw_bloom(cx, cy, R * 0.26f, R * 0.48f, R * 0.5f, o ? TAP_RAW_B : TAP_RAW_A, mix_col(C_PANEL, col, 0.45f), 0);
-    draw_bloom(cx, cy, R * 0.52f, R * 0.92f, R + 6, o ? TAP_B : TAP_A, col, 0);
+    static float env_raw[2], env_out[2];
+    draw_polar_wave(cx, cy, R * 0.34f, R * 0.14f, o ? TAP_RAW_B : TAP_RAW_A, mix_col(C_PANEL, col, 0.5f), 1, &env_raw[o]);
+    float open = gate > 0.02f ? 0.35f + 0.65f * gate : 0.0f; /* the swing opens and closes with the rhythm */
+    draw_polar_wave(cx, cy, R * 0.58f, R * 0.26f * open, o ? TAP_B : TAP_A, col, 2, &env_out[o]);
     draw_seq_ring(o, cx, cy, R - 7);
     static const char *const mn[] = {"live", "loop", "wave", "grain"};
-    text_center(cx, cy - 20, mn[(int)p[P_A_MODE + o * OSC_STRIDE]], C_TEXT, 0);
-    disc(cx, cy + 4, 4, state_col(o));
     char t[16];
     seq_label(o, t, sizeof t);
-    text_center(cx, cy + 12, t, (int)p[SEQ_PARAM(o, 0)] ? C_DIM : C_PANEL2, 0);
+    text_halo(cx, cy - 20, mn[(int)p[P_A_MODE + o * OSC_STRIDE]], C_TEXT);
+    disc(cx, cy + 4, 4, state_col(o));
+    text_halo(cx, cy + 12, t, (int)p[SEQ_PARAM(o, 0)] ? C_DIM : C_PANEL2);
 }
 
 /* five circles along the chain after the voices; each grows the more it changes the sound */
