@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <ctype.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -71,8 +72,8 @@ static char app_dir[PATH_MAX], stations_path[PATH_MAX + 16], settings_path[PATH_
 enum { SCR_PLAY, SCR_EDIT };
 enum { OV_NONE, OV_KEYBOARD, OV_SCANMENU, OV_SCANRESULTS };
 enum { KB_ADD_URL, KB_ADD_NAME, KB_SEARCH };
-enum { TAB_RADIO, TAB_VOICES, TAB_RHYTHM, TAB_ENGINE, TAB_COUNT };
-static const char *const tab_names[TAB_COUNT] = {"RADIO", "VOICES", "RHYTHM", "ENGINE"};
+enum { TAB_RADIO, TAB_VOICES, TAB_RHYTHM, TAB_ENGINE, TAB_MIX, TAB_COUNT };
+static const char *const tab_names[TAB_COUNT] = {"RADIO", "VOICES", "RHYTHM", "ENGINE", "MIX"};
 
 #define ROW_HEADER (-3)
 
@@ -81,6 +82,7 @@ static struct {
     int tab;
     int sel[TAB_COUNT], scroll[TAB_COUNT];
     int radio_sel, radio_scroll;
+    int mix_sel;              /* MIX page: selected fader */
     int confirm_delete;
     int octave;
     int held[B_COUNT];
@@ -1100,7 +1102,7 @@ static void draw_play(void)
 
 /* ================================================================== EDIT screen */
 
-static int tab_page(int tab) { return tab - 1; } /* VOICES, RHYTHM, ENGINE -> PAGE_* */
+static int tab_page(int tab) { return tab - 1; } /* VOICES, RHYTHM, ENGINE, MIX -> PAGE_* */
 
 /* rows for the current tab; ids >= 0 are params, ROW_HEADER rows carry a section name */
 static int build_rows(int tab, int *rows, const char **hdrs)
@@ -1121,7 +1123,7 @@ static int build_rows(int tab, int *rows, const char **hdrs)
 static void draw_tabs(void)
 {
     for (int i = 0; i < TAB_COUNT; i++) {
-        int x = 30 + i * 155;
+        int x = 30 + i * 124;
         int sel = ui.tab == i;
         if (sel) disc(x, 16, 7, C_LEAF);
         else circle(x, 16, 7, C_DIM);
@@ -1230,9 +1232,111 @@ static void draw_param_page(void)
     }
 }
 
+/* ------------------------------------------------------------------ MIX page: a fader for every level */
+
+typedef struct { int id, meter, group; const char *name; } MixStrip;
+enum { MG_A, MG_B, MG_FX, MG_MASTER, MG_COUNT };
+static const char *const mix_group_names[MG_COUNT] = {"VOICE A", "VOICE B", "EFFECTS", "MASTER"};
+static const MixStrip mix_strips[] = {
+    {P_A_LEVEL, MIX_A, MG_A, "level"},       {P_A_DRIVE, -1, MG_A, "drive"},
+    {P_B_LEVEL, MIX_B, MG_B, "level"},       {P_B_DRIVE, -1, MG_B, "drive"},
+    {P_CROSS_LEVEL, MIX_CROSS, MG_FX, "cross"}, {P_SHAPE_LEVEL, MIX_SHAPE, MG_FX, "shape"},
+    {P_ECHO_LEVEL, MIX_ECHO, MG_FX, "echo"},  {P_SPACE_LEVEL, MIX_SPACE, MG_FX, "space"},
+    {P_LIMIT, MIX_LIMIT, MG_MASTER, "limit"}, {P_VOLUME, MIX_OUT, MG_MASTER, "volume"},
+};
+#define MIX_N ((int)(sizeof mix_strips / sizeof mix_strips[0]))
+#define MIX_X0 10
+#define MIX_W 62
+#define MIX_TOP 82
+#define MIX_BOT 292
+
+static Uint32 mix_group_col(int g) { return g == MG_A ? C_LEAF : g == MG_B ? C_AMBER : g == MG_FX ? C_WATER : C_TEXT; }
+
+static float mix_frac(int id, float v)
+{
+    const ParamInfo *pi = &param_info[id];
+    float f = (v - pi->min) / (pi->max - pi->min);
+    return f < 0 ? 0 : f > 1 ? 1 : f;
+}
+
+/* short value for under a fader (the full one is shown for the selected fader) */
+static void mix_short_value(int id, float v, char *b, int n)
+{
+    const char *unit = param_info[id].unit;
+    if (!strcmp(unit, "lvl")) { if (v < 0.001f) snprintf(b, n, "off"); else snprintf(b, n, "%+.1f", 20.0f * log10f(v)); }
+    else if (!strcmp(unit, "limit")) { if (v < 0.01f) snprintf(b, n, "off"); else snprintf(b, n, "%.1f", -18.0f * v); }
+    else if (!strcmp(unit, "dB")) snprintf(b, n, "%+.0f", v);
+    else snprintf(b, n, "%.0f%%", v * 100);
+}
+
+static void draw_mix_page(void)
+{
+    const float *p = synth_params(syn);
+    if (ui.mix_sel < 0 || ui.mix_sel >= MIX_N) ui.mix_sel = 0;
+    /* group headings over their faders */
+    for (int g = 0; g < MG_COUNT; g++) {
+        int first = -1, last = -1;
+        for (int i = 0; i < MIX_N; i++)
+            if (mix_strips[i].group == g) { if (first < 0) first = i; last = i; }
+        int x0 = MIX_X0 + first * MIX_W + 4, x1 = MIX_X0 + (last + 1) * MIX_W - 4;
+        Uint32 col = mix_group_col(g);
+        text_center((x0 + x1) / 2, 36, mix_group_names[g], mix_col(C_DIM, col, 0.6f), 0);
+        fill(x0, 58, x1 - x0, 1, mix_col(C_PANEL2, col, 0.4f));
+    }
+    for (int i = 0; i < MIX_N; i++) {
+        const MixStrip *m = &mix_strips[i];
+        int x = MIX_X0 + i * MIX_W, cx = x + MIX_W / 2, sel = i == ui.mix_sel;
+        Uint32 col = mix_group_col(m->group);
+        if (sel) fill(x + 2, 62, MIX_W - 4, MIX_BOT - 62 + 36, C_SEL);
+        text_center(cx, 62, m->name, sel ? C_TEXT : C_DIM, 6);
+        int h = MIX_BOT - MIX_TOP;
+        int tx = cx - 6; /* fader track, with the meter to its right */
+        fill(tx - 1, MIX_TOP, 3, h, C_PANEL2);
+        float f = mix_frac(m->id, p[m->id]);
+        int ty = MIX_BOT - (int)(f * h);
+        fill(tx - 1, ty, 3, MIX_BOT - ty, sel ? col : mix_col(C_PANEL2, col, 0.6f));
+        float unity = !strcmp(param_info[m->id].unit, "lvl") ? mix_frac(m->id, 1.0f) :
+                      m->id == P_VOLUME ? mix_frac(m->id, 0.0f) : -1;
+        if (unity >= 0) { int uy = MIX_BOT - (int)(unity * h); fill(tx - 9, uy, 4, 1, C_DIM); }
+        /* thumb */
+        fill(tx - 11, ty - 4, 23, 9, sel ? C_TEXT : C_DIM);
+        fill(tx - 9, ty, 19, 1, C_BG);
+        if (m->meter >= 0) {
+            float mv = synth_mix_meter(syn, m->meter);
+            int mx = cx + 10;
+            fill(mx, MIX_TOP, 5, h, C_PANEL);
+            if (m->meter == MIX_LIMIT) { /* gain reduction grows down from the top */
+                int gh = (int)(fminf(mv * 2.0f, 1.0f) * h);
+                fill(mx, MIX_TOP, 5, gh, C_RUST);
+            } else {
+                float db = 20.0f * log10f(mv + 1e-6f), mf = (db + 48.0f) / 48.0f; /* -48 .. 0 dB */
+                mf = mf < 0 ? 0 : mf > 1 ? 1 : mf;
+                int mh = (int)(mf * h);
+                fill(mx, MIX_BOT - mh, 5, mh, db > -1.0f ? C_RUST : db > -9.0f ? C_AMBER : col);
+            }
+        }
+        char v[24];
+        mix_short_value(m->id, p[m->id], v, sizeof v);
+        text_center(cx, MIX_BOT + 8, v, sel ? C_TEXT : C_DIM, 6);
+    }
+    const MixStrip *m = &mix_strips[ui.mix_sel];
+    char full[64], line_[160];
+    param_format_ctx(m->id, p, full, sizeof full);
+    snprintf(line_, sizeof line_, "%s %s  %s", mix_group_names[m->group], m->name, full);
+    for (char *c = line_; *c && c < line_ + 8; c++) *c = (char)tolower((unsigned char)*c);
+    text(24, 340, line_, C_TEXT, 30);
+    text_right(624, 340, "<> fader  ^v set  hold B fine", C_PANEL2, 0);
+}
+
 /* which of the five stages the selected setting acts on (-1: a voice or nothing) */
 static int selected_stage(void)
 {
+    if (ui.tab == TAB_MIX) {
+        static const int st[] = {[P_CROSS_LEVEL - P_CROSS_LEVEL] = 0, [P_SHAPE_LEVEL - P_CROSS_LEVEL] = 2,
+                                 [P_ECHO_LEVEL - P_CROSS_LEVEL] = 3, [P_SPACE_LEVEL - P_CROSS_LEVEL] = 4};
+        int id = mix_strips[ui.mix_sel].id;
+        return id >= P_CROSS_LEVEL && id <= P_SPACE_LEVEL ? st[id - P_CROSS_LEVEL] : -1;
+    }
     if (ui.tab != TAB_ENGINE) return -1;
     int rows[256];
     const char *hdrs[256];
@@ -1253,6 +1357,7 @@ static void draw_edit(void)
     fill(0, 0, SCREEN_W, SCREEN_H, C_BG);
     draw_tabs();
     if (ui.tab == TAB_RADIO) draw_radio_page();
+    else if (ui.tab == TAB_MIX) draw_mix_page();
     else draw_param_page();
 
     /* the two voices, then the five stages, with the stage being edited ringed */
@@ -1264,7 +1369,7 @@ static void draw_edit(void)
     }
     draw_stages(168, 402, 64, 12, 26, selected_stage(), 0);
     draw_beat(440, 456);
-    text(16, 456, "L1/R1 page  Y dice  START play", C_PANEL2, 0);
+    text(16, 456, ui.tab == TAB_MIX ? "L1/R1 page  Y reset  START play" : "L1/R1 page  Y dice  START play", C_PANEL2, 0);
 }
 
 /* ================================================================== input */
@@ -1405,6 +1510,12 @@ static void dice_section(void)
 
 static void edit_nav(int b)
 {
+    if (ui.tab == TAB_MIX) {
+        if (b == B_LEFT) ui.mix_sel = (ui.mix_sel + MIX_N - 1) % MIX_N;
+        if (b == B_RIGHT) ui.mix_sel = (ui.mix_sel + 1) % MIX_N;
+        if (b == B_UP || b == B_DOWN) adjust_param(mix_strips[ui.mix_sel].id, b == B_UP ? 1 : -1);
+        return;
+    }
     if (ui.tab == TAB_RADIO) {
         int n = stations.count;
         if (b == B_UP && n) ui.radio_sel = (ui.radio_sel + n - 1) % n;
@@ -1491,7 +1602,12 @@ static void on_press(int b)
         return;
     }
     if (b == B_L2 || b == B_X) do_grab();
-    if (b == B_Y) dice_section();
+    if (b == B_Y && ui.tab == TAB_MIX) { /* back to unity / the default */
+        const MixStrip *m = &mix_strips[ui.mix_sel];
+        synth_set_param(syn, m->id, param_info[m->id].def);
+        toast("%s %s reset", mix_group_names[m->group], m->name);
+        ui.dirty_settings = 1;
+    } else if (b == B_Y) dice_section();
 }
 
 static void on_release(int b)
@@ -1812,6 +1928,7 @@ int main(int argc, char **argv)
         if (!strcmp(shot_view, "radio")) ui.tab = TAB_RADIO;
         if (!strcmp(shot_view, "rhythm")) ui.tab = TAB_RHYTHM;
         if (!strcmp(shot_view, "engine")) ui.tab = TAB_ENGINE;
+        if (!strcmp(shot_view, "mix")) ui.tab = TAB_MIX;
         if (!strcmp(shot_view, "kb")) open_keyboard(KB_ADD_URL, "http://ice1.somafm.com/");
         if (!strcmp(shot_view, "scan")) ui.overlay = OV_SCANMENU;
         /* let the engine run a moment so the rings and waves have something to show */

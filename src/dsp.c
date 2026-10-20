@@ -26,7 +26,7 @@ static const char *const rates[] = {"1/32", "1/16", "1/8T", "1/8", "1/8.", "5/16
                                     "5/8", "1/2", "1 BAR", "2 BARS", "4 BARS", "5 BARS", NULL};
 static const float rate_beats[] = {0.125f, 0.25f, 1.0f / 3, 0.5f, 0.75f, 1.25f, 2.0f / 3, 1, 1.5f, 2.5f, 2, 4, 8, 16, 20};
 
-const char *const page_names[PAGE_COUNT] = {"VOICES", "RHYTHM", "ENGINE"};
+const char *const page_names[PAGE_COUNT] = {"VOICES", "RHYTHM", "ENGINE", "MIX"};
 
 int euclid_hit(int steps, int pulses, int rotate, int step)
 {
@@ -49,8 +49,9 @@ int euclid_hit(int steps, int pulses, int rotate, int step)
     [P_##X##_SIZE] = {x "_size", "Size", PAGE_VOICES, 1, 2000, size, 1.08f, 1, "ms", NULL},                      \
     [P_##X##_TEXTURE] = {x "_texture", "Texture", PAGE_VOICES, 0, 1, tex, 0.02f, 0, "", NULL},                   \
     [P_##X##_FOCUS] = {x "_focus", "Focus", PAGE_VOICES, 0, 2, 0, 1, 0, "", focuses},                            \
-    [P_##X##_LEVEL] = {x "_level", "Level", PAGE_VOICES, 0, 1, lvl, 0.02f, 0, "", NULL},                         \
+    [P_##X##_LEVEL] = {x "_level", "Level", PAGE_MIX, 0, 2, lvl, 0.02f, 0, "lvl", NULL},                       \
     [P_##X##_PAN] = {x "_pan", "Pan", PAGE_VOICES, -1, 1, pan, 0.05f, 0, "pan", NULL},                           \
+    [P_##X##_DRIVE] = {x "_drive", "Drive", PAGE_MIX, 0, 1, 0, 0.02f, 0, "", NULL},                              \
     [P_##X##_OSC] = {x "_osc", "Oscillator", PAGE_VOICES, 0, 4, 0, 1, 0, "", osc_waves},                         \
     [P_##X##_OSC_MIX] = {x "_osc_mix", "Osc Mix", PAGE_VOICES, 0, 1, 0, 0.02f, 0, "", NULL},                     \
     CELL_PARAMS(X, x, GATE, "gate", "Rhythm", 1, steps, pulses),                                                  \
@@ -86,7 +87,12 @@ const ParamInfo param_info[P_COUNT] = {
     [P_ECHO]   = {"echo", "Echo", PAGE_ENGINE, 0, 1, 0.15f, 0.05f, 0, "", NULL},
     [P_SPACE]  = {"space", "Space", PAGE_ENGINE, 0, 1, 0.25f, 0.05f, 0, "", NULL},
     [P_WIDTH]  = {"width", "Stereo Width", PAGE_ENGINE, 0, 2, 1, 0.05f, 0, "", NULL},
-    [P_VOLUME] = {"volume", "Volume", PAGE_ENGINE, -24, 12, 0, 1, 0, "dB", NULL},
+    [P_VOLUME] = {"volume", "Volume", PAGE_MIX, -24, 12, 0, 1, 0, "dB", NULL},
+    [P_CROSS_LEVEL] = {"cross_level", "Cross Level", PAGE_MIX, 0, 2, 1, 0.02f, 0, "lvl", NULL},
+    [P_SHAPE_LEVEL] = {"shape_level", "Shape Level", PAGE_MIX, 0, 2, 1, 0.02f, 0, "lvl", NULL},
+    [P_ECHO_LEVEL]  = {"echo_level", "Echo Level", PAGE_MIX, 0, 2, 1, 0.02f, 0, "lvl", NULL},
+    [P_SPACE_LEVEL] = {"space_level", "Space Level", PAGE_MIX, 0, 2, 1, 0.02f, 0, "lvl", NULL},
+    [P_LIMIT]       = {"limit", "Limiter", PAGE_MIX, 0, 1, 0, 0.02f, 0, "limit", NULL},
 };
 
 static int osc_of(int id) { return id >= P_A_STATION && id <= P_B_CHANCE ? (id - P_A_STATION) / OSC_STRIDE : -1; }
@@ -104,7 +110,8 @@ const char *param_section(int id)
     if (id <= P_ROOT) return "KEY";
     if (id <= P_CRUSH) return "SHAPE";
     if (id <= P_WIDTH) return "SPACE";
-    return "OUTPUT";
+    if (id == P_VOLUME) return "OUTPUT";
+    return "MIX";
 }
 
 const char *param_label(int id, const float *p)
@@ -196,6 +203,12 @@ void param_format_ctx(int id, const float *params, char *buf, int n)
         else snprintf(buf, n, "%s %.0f%%", v < 0 ? "left" : "right", fabsf(v) * 100);
     } else if (!strcmp(p->unit, "ms")) {
         snprintf(buf, n, v < 10 ? "%.1f ms" : "%.0f ms", v);
+    } else if (!strcmp(p->unit, "limit")) { /* limiter threshold, 0 .. -18 dB */
+        if (v < 0.01f) snprintf(buf, n, "off");
+        else snprintf(buf, n, "%.1f dB", -18.0f * v);
+    } else if (!strcmp(p->unit, "lvl")) { /* a fader: gain shown in dB */
+        if (v < 0.001f) snprintf(buf, n, "off");
+        else snprintf(buf, n, "%+.1f dB", 20.0f * log10f(v));
     } else if (!strcmp(p->unit, "dB")) {
         snprintf(buf, n, "%+.0f dB", v);
     } else if (!strcmp(p->unit, "st")) {
@@ -304,6 +317,9 @@ struct Synth {
     int floor_holder;          /* converse: voice with the floor */
     float floor_quiet;         /* seconds the holder has been quiet */
     float s_lvl[2], s_vol;
+    float s_fx[4];             /* smoothed effect return levels: cross, shape, echo, space */
+    float meter[MIX_COUNT], meter_fall;
+    float lim_env, lim_rel;    /* master limiter: peak envelope and its release coefficient */
     float win[WIN_N + 1];
     float tap[TAP_COUNT][TAP_LEN];
     unsigned tap_w;
@@ -376,6 +392,9 @@ Synth *synth_create(int sample_rate)
     s->lev_gain = 1.0f;
     s->lev_env = 0.04f;
     s->s_vol = 1.0f;
+    for (int i = 0; i < 4; i++) s->s_fx[i] = 1.0f;
+    s->meter_fall = expf(-1.0f / (0.3f * s->fs));
+    s->lim_rel = expf(-1.0f / (0.08f * s->fs));
     s->dly_time_s = 0.3f * s->fs;
     bank_setup(s, 13);
     return s;
@@ -406,6 +425,7 @@ float synth_speechness(const Synth *s, int o) { return s->osc[o].vad.speech; }
 int synth_voice_state(const Synth *s, int o) { return s->osc[o].vad.state; }
 float synth_osc_level(const Synth *s, int o) { return s->osc[o].level; }
 float synth_leveller_gain(const Synth *s) { return s->lev_gain; }
+float synth_mix_meter(const Synth *s, int ch) { return ch >= 0 && ch < MIX_COUNT ? s->meter[ch] : 0; }
 int synth_floor(const Synth *s) { return s->p[P_CONVERSE] > 0.01f ? s->floor_holder : -1; }
 
 void synth_tap_read(const Synth *s, int tap, float *dst, int n)
@@ -499,7 +519,8 @@ static int dice_excluded(int id)
 {
     int o = osc_of(id);
     int f = o >= 0 ? osc_field(id) : id;
-    return f == P_A_STATION || f == P_A_FOCUS || id == P_VOLUME || id == P_BPM || id == P_SYNC || id == P_ROOT;
+    return f == P_A_STATION || f == P_A_FOCUS || f == P_A_DRIVE || id == P_VOLUME || id == P_BPM || id == P_SYNC || id == P_ROOT ||
+           (id >= P_CROSS_LEVEL && id <= P_LIMIT); /* the effect returns stay where the player set them */
 }
 
 void synth_randomize(Synth *s, const int *ids, int n, float amount)
@@ -539,7 +560,7 @@ void synth_dice(Synth *s, int which)
         int pg = param_info[i].page;
         int o = osc_of(i);
         int rhythm = o >= 0 && osc_field(i) >= P_A_GATE_ON;
-        if (which == DICE_SOUND && ((pg == PAGE_VOICES) || (pg == PAGE_ENGINE))) ids[n++] = i;
+        if (which == DICE_SOUND && (pg == PAGE_VOICES || pg == PAGE_ENGINE || pg == PAGE_MIX)) ids[n++] = i;
         if (which == DICE_RHYTHM && rhythm) ids[n++] = i;
         if (which == DICE_MUTATE && !param_info[i].choices) ids[n++] = i;
     }
@@ -935,6 +956,12 @@ float synth_fold_preview(float x, float fold)
     return x + mix * (y - x);
 }
 
+static inline void meter_hit(float *m, float v, float fall)
+{
+    v = fabsf(v);
+    *m = v > *m ? v : *m * fall;
+}
+
 void synth_process(Synth *s, const float *inA, const float *inB, float *out, int frames)
 {
     const float fs = s->fs;
@@ -959,6 +986,12 @@ void synth_process(Synth *s, const float *inA, const float *inB, float *out, int
             for (int c = 0; c < NCELL; c++) s->osc[o].cell_flash[c] *= expf(-n / (0.15f * fs));
         }
         s->s_vol += (db2lin(s->p[P_VOLUME]) - s->s_vol) * 0.15f;
+        for (int f = 0; f < 4; f++) s->s_fx[f] += (s->p[P_CROSS_LEVEL + f] - s->s_fx[f]) * 0.15f;
+        const float cross_lvl = s->s_fx[0], shape_lvl = s->s_fx[1], echo_lvl = s->s_fx[2], space_lvl = s->s_fx[3];
+        float *mt = s->meter;
+        const float fall = s->meter_fall;
+        /* master limiter: threshold 0 .. -18 dB, made up to a -1 dB ceiling */
+        const float limit = s->p[P_LIMIT], lim_thr = db2lin(-18.0f * limit), lim_makeup = 0.89f / lim_thr;
 
         /* filter: one knob from dark (low-pass) through open to thin (high-pass) */
         float tone = s->p[P_TONE];
@@ -1054,9 +1087,16 @@ void synth_process(Synth *s, const float *inA, const float *inB, float *out, int
                 os->duck += (duck_target[o] - os->duck) * 0.0005f; /* ~40 ms */
                 vl *= os->duck;
                 vr *= os->duck;
+                float vdrive = s->p[P_A_DRIVE + o * OSC_STRIDE];
+                if (vdrive > 0.01f) { /* the voice's own drive: warm saturation, roughly level-matched */
+                    float dg = 1.0f + vdrive * 9.0f, dc = 1.0f / (1.0f + vdrive * 2.5f);
+                    vl = fast_tanh(vl * dg) * dc;
+                    vr = fast_tanh(vr * dg) * dc;
+                }
                 vm[o] = 0.5f * (vl + vr) * s->s_lvl[o];
                 s->tap[o ? TAP_B : TAP_A][tw] = 0.5f * (vl + vr);
                 os->level += (fabsf(vl) + fabsf(vr) - os->level) * 0.001f;
+                meter_hit(&mt[o ? MIX_B : MIX_A], fmaxf(fabsf(vl), fabsf(vr)) * s->s_lvl[o], fall);
                 float pan = s->p[P_A_PAN + o * OSC_STRIDE];
                 x[0] += vl * s->s_lvl[o] * (1.0f - (pan > 0 ? pan : 0));
                 x[1] += vr * s->s_lvl[o] * (1.0f + (pan < 0 ? pan : 0));
@@ -1065,6 +1105,7 @@ void synth_process(Synth *s, const float *inA, const float *inB, float *out, int
 
             /* cross-modulation between the two voices */
             float am = vm[0], bm = vm[1];
+            const float dry[2] = {x[0], x[1]};
             if (ring > 0.001f) {
                 float rm = am * bm * 6.0f * ring;
                 x[0] += rm;
@@ -1094,9 +1135,11 @@ void synth_process(Synth *s, const float *inA, const float *inB, float *out, int
                     x[1] += mm * (h - x[1]);
                 }
             }
+            for (int c = 0; c < 2; c++) x[c] = dry[c] + cross_lvl * (x[c] - dry[c]); /* cross return level */
+            meter_hit(&mt[MIX_CROSS], fmaxf(fabsf(x[0] - dry[0]), fabsf(x[1] - dry[1])), fall);
             s->tap[TAP_CROSS][tw] = 0.5f * (x[0] + x[1]);
 
-            float tf = 0, tfo = 0;
+            float tf = 0, tfo = 0, pre[2];
             for (int c = 0; c < 2; c++) {
                 float v = x[c];
                 if (fmode) {
@@ -1114,6 +1157,7 @@ void synth_process(Synth *s, const float *inA, const float *inB, float *out, int
                     v += s->lo_lp[c] * g_low + (v - s->hi_lp[c]) * g_high;
                 }
                 tf += v;
+                pre[c] = v;
                 if (drive > 0.01f) v = fast_tanh(v * dgain) * dcomp; /* warm saturation */
                 v = synth_fold_preview(v, fold);
                 tfo += v;
@@ -1130,6 +1174,11 @@ void synth_process(Synth *s, const float *inA, const float *inB, float *out, int
                 x[1] = s->crush_hold[1];
                 tfo = x[0] + x[1];
             }
+            if (fabsf(shape_lvl - 1.0f) > 0.001f) { /* shape return level: blend the dry signal back in */
+                for (int c = 0; c < 2; c++) x[c] = pre[c] + shape_lvl * (x[c] - pre[c]);
+                tfo = x[0] + x[1];
+            }
+            meter_hit(&mt[MIX_SHAPE], fmaxf(fabsf(x[0] - pre[0]), fabsf(x[1] - pre[1])), fall);
             s->tap[TAP_FOLD][tw] = 0.5f * tfo;
 
             /* echo send: ping-pong at a dotted eighth */
@@ -1147,16 +1196,22 @@ void synth_process(Synth *s, const float *inA, const float *inB, float *out, int
                 s->dly[s->dly_w * 2 + c] = fast_tanh(x[c] * (echo > 0.01f ? 1.0f : 0.0f) + s->dly_lp[c] * dfb);
             }
             s->dly_w = (s->dly_w + 1) & (DLY_N - 1);
-            x[0] += d[0] * echo;
-            x[1] += d[1] * echo;
+            float el = echo * echo_lvl;
+            x[0] += d[0] * el;
+            x[1] += d[1] * el;
+            meter_hit(&mt[MIX_ECHO], fmaxf(fabsf(d[0]), fabsf(d[1])) * el, fall);
             s->tap[TAP_ECHO][tw] = 0.5f * (x[0] + x[1]);
 
             /* space send */
             if (space > 0.01f) {
                 float wl, wr;
                 reverb_tick(s, x[0], x[1], &wl, &wr, rsize, rgains);
-                x[0] += wl * space * 1.2f;
-                x[1] += wr * space * 1.2f;
+                float sl = space * 1.2f * space_lvl;
+                x[0] += wl * sl;
+                x[1] += wr * sl;
+                meter_hit(&mt[MIX_SPACE], fmaxf(fabsf(wl), fabsf(wr)) * sl, fall);
+            } else {
+                mt[MIX_SPACE] *= fall;
             }
 
             if (fabsf(width - 1.0f) > 0.01f) { /* stereo width: 0 mono .. 2 extra wide */
@@ -1174,9 +1229,21 @@ void synth_process(Synth *s, const float *inA, const float *inB, float *out, int
                 float coef = target < s->lev_gain ? 0.0002f : 0.00002f; /* down in ~0.1 s, up in ~1 s */
                 s->lev_gain += (target - s->lev_gain) * coef;
             }
-            float gain = s->lev_gain * s->s_vol;
-            out[i * 2] = fast_tanh(x[0] * gain);
-            out[i * 2 + 1] = fast_tanh(x[1] * gain);
+            for (int c = 0; c < 2; c++) x[c] *= s->lev_gain;
+            if (limit > 0.01f) { /* instant attack, ~80 ms release */
+                float pk = fmaxf(fabsf(x[0]), fabsf(x[1]));
+                s->lim_env = pk > s->lim_env ? pk : s->lim_env * s->lim_rel;
+                float lg = s->lim_env > lim_thr ? lim_thr / s->lim_env : 1.0f;
+                mt[MIX_LIMIT] = 1.0f - lg > mt[MIX_LIMIT] ? 1.0f - lg : mt[MIX_LIMIT] * fall;
+                x[0] *= lg * lim_makeup;
+                x[1] *= lg * lim_makeup;
+            } else {
+                s->lim_env = 0;
+                mt[MIX_LIMIT] *= fall;
+            }
+            out[i * 2] = fast_tanh(x[0] * s->s_vol);
+            out[i * 2 + 1] = fast_tanh(x[1] * s->s_vol);
+            meter_hit(&mt[MIX_OUT], fmaxf(fabsf(out[i * 2]), fabsf(out[i * 2 + 1])), fall);
             s->tap[TAP_OUT][tw] = 0.5f * (out[i * 2] + out[i * 2 + 1]);
             s->tap_w++;
         }

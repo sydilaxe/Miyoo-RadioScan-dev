@@ -14,7 +14,7 @@
 
 #define VOICE_FIELDS(X)                                                                                       \
     P_##X##_STATION, P_##X##_MODE, P_##X##_TUNE, P_##X##_SIZE, P_##X##_TEXTURE, P_##X##_FOCUS, P_##X##_LEVEL, \
-    P_##X##_PAN, P_##X##_OSC, P_##X##_OSC_MIX,                                                                             \
+    P_##X##_PAN, P_##X##_DRIVE, P_##X##_OSC, P_##X##_OSC_MIX,                                                                             \
     P_##X##_GATE_ON, P_##X##_GATE_STEPS, P_##X##_GATE_PULSES, P_##X##_GATE_ROT,                                 \
     P_##X##_RATE, P_##X##_LENGTH, P_##X##_ATTACK, P_##X##_RELEASE, P_##X##_CHANCE
 
@@ -26,6 +26,8 @@ enum {
     P_ROOT,
     P_TONE, P_RESO, P_LOW, P_HIGH, P_DRIVE, P_FOLD, P_CRUSH,
     P_ECHO, P_SPACE, P_WIDTH, P_VOLUME,
+    P_CROSS_LEVEL, P_SHAPE_LEVEL, P_ECHO_LEVEL, P_SPACE_LEVEL, /* MIX page: how loud each effect comes back */
+    P_LIMIT,                                                   /* MIX page: master limiter */
     P_COUNT
 };
 
@@ -39,7 +41,7 @@ enum { OSC_LIVE, OSC_LOOP, OSC_WAVE, OSC_GRAIN };
 enum { FOCUS_ALL, FOCUS_VOICE, FOCUS_MUSIC };
 enum { CAT_ANY, CAT_VOICE, CAT_MUSIC, CAT_SOUND };
 enum { VS_SILENT, VS_MUSIC, VS_VOICE };
-enum { PAGE_VOICES, PAGE_RHYTHM, PAGE_ENGINE, PAGE_COUNT };
+enum { PAGE_VOICES, PAGE_RHYTHM, PAGE_ENGINE, PAGE_MIX, PAGE_COUNT };
 enum { VOC_OFF, VOC_A_TO_B, VOC_B_TO_A };
 enum { FM_B_TO_A, FM_A_TO_B };
 
@@ -109,6 +111,10 @@ enum { TAP_STREAM, TAP_VOICES, TAP_CROSS, TAP_FILTER, TAP_FOLD, TAP_ECHO, TAP_OU
 void synth_tap_features(const Synth *s, int tap, float *rms, float *bright, float *crest);
 float synth_fold_preview(float x, float fold);         /* the folder's shape at a fold amount */
 float synth_cross_amount(const Synth *s);              /* 0..1: how much cross-modulation is on */
+/* MIX page meters: peak level (0..~1) of each voice after its drive and fader, each effect's return and the
+ * output; MIX_LIMIT is the limiter's gain reduction (0 none .. 1 full) */
+enum { MIX_A, MIX_B, MIX_CROSS, MIX_SHAPE, MIX_ECHO, MIX_SPACE, MIX_LIMIT, MIX_OUT, MIX_COUNT };
+float synth_mix_meter(const Synth *s, int ch);
 
 float param_clamp(int id, float v);
 float param_adjust(int id, float v, int dir, int fine);

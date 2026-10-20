@@ -16,7 +16,7 @@ a wavefolder, echo and space.
   - **WAVE:** a few milliseconds of the stream as a pitched waveform that keeps re-scanning the broadcast.
   - **GRAIN:** a cloud of grains from the last moments of the stream.
 
-  Each voice has its own **level** and **pan**. **Focus** can make a voice listen only to speech or only to
+  Each voice has its own **level**, **drive** and **pan**. **Focus** can make a voice listen only to speech or only to
   music; either voice can play any station. An optional **oscillator** (sine,
   triangle, saw or square) can be mixed into each voice for a cleaner tone or a carrier for cross-modulation.
   It's off by default; the radio comes first.
@@ -37,7 +37,10 @@ a wavefolder, echo and space.
   - **Bass** and **treble** shelves.
   - **Drive** (warm saturation), **fold**, and **crush** (fewer bits, lower sample rate).
   - **Echo** (a dotted-eighth ping-pong), **space** (reverb) and **stereo width**.
-  - **Volume**, and a leveller that keeps the overall loudness steady so the radio comes through clearly.
+  - **Volume**, a **limiter**, and a leveller that keeps the overall loudness steady so the radio comes through
+    clearly.
+- **Mix.** One page of faders with live meters: each voice's level and drive, how loud each effect comes back
+  (cross, shape, echo, space), the limiter and the master volume.
 - **Stations.** 35 are preloaded and you can add more three ways:
   1. Edit `stations.txt` on the SD card (`Name|URL|voice|music|sound`).
   2. Type a URL on the on-screen keyboard (RADIO page, **Y**).
@@ -68,13 +71,14 @@ The PLAY page is for performing: the two rhythms and the sound, live.
   - Attacks send out ripples.
   - In the fold circle the petals bend through the folder itself.
 
-The EDIT pages (**RADIO, VOICES, RHYTHM, ENGINE**) hold every setting. A strip at the bottom shows the voices
+The EDIT pages (**RADIO, VOICES, RHYTHM, ENGINE, MIX**) hold every setting. A strip at the bottom shows the voices
 and the five stages, with the stage you're editing ringed.
 
 | | |
 |---|---|
 | ![engine](docs/engine.png) | ![rhythm](docs/rhythm.png) |
 | ![radio](docs/radio.png) | ![sound gestures](docs/playmod.png) |
+| ![mix](docs/mix.png) | |
 
 ## Install
 
@@ -113,7 +117,7 @@ every change shows its pattern briefly, like `A  E(5,8) >2  1/8`.
 | START | go to EDIT |
 | MENU twice | quit |
 
-**EDIT** (RADIO, VOICES, RHYTHM, ENGINE)
+**EDIT** (RADIO, VOICES, RHYTHM, ENGINE, MIX)
 
 | Button | Action |
 |---|---|
@@ -123,6 +127,14 @@ every change shows its pattern briefly, like `A  E(5,8) >2  1/8`.
 | Y | roll the dice on the selected section |
 | SELECT | tap tempo |
 | START | back to PLAY |
+
+**MIX page:** ten faders in four groups: VOICE A (level, drive), VOICE B (level, drive), EFFECTS (cross,
+shape, echo and space return levels) and MASTER (limiter, volume). Left / Right choose a fader, Up / Down move it
+(hold B for fine steps), and Y puts it back to its default. Levels are shown in dB; the tick on each track is unity
+(0 dB), and faders go up to +6 dB. Each fader's meter shows its signal after the fader; the limiter's meter shows
+how much it is turning the sound down. An effect's return level sets how loud it comes back, while its amount on
+the ENGINE page still sets its character (echo feedback, reverb length, how hard the folder works). The limiter
+goes from off to an 18 dB threshold, with the output made back up to just under full scale.
 
 **RADIO page:** A sends the selected station to voice A and B sends it to voice B. Y adds a URL, X deletes
 (press twice), L2 sets the station's kind (voice / music / sound), and R2 scans the directory.
