@@ -135,12 +135,14 @@ static void enable_flush_to_zero(void)
 static volatile unsigned aud_late, aud_calls;
 static volatile float aud_worst_gap_ms, aud_worst_run_ms;
 
-static double mono_ms(void)
+static uint64_t now_us(void)
 {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return ts.tv_sec * 1000.0 + ts.tv_nsec / 1e6;
+    return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)(ts.tv_nsec / 1000);
 }
+
+static double mono_ms(void) { return now_us() / 1000.0; }
 
 static void audio_cb(void *ud, Uint8 *stream, int len)
 {
@@ -381,8 +383,8 @@ static void *save_thread(void *arg)
     return NULL;
 }
 
-/* background = 0 writes now (on quit) */
-static void save_settings_ex(int background)
+/* background: write from a short-lived thread; otherwise write now (on quit) */
+static void write_settings(int background)
 {
     if (save_busy) return; /* the previous save is still writing: try again later */
     int n = 0, cap = (int)sizeof save_buf;
@@ -403,7 +405,7 @@ static void save_settings_ex(int background)
 static void save_settings(void) /* now, on this thread (on quit): after any save still writing */
 {
     while (save_busy) SDL_Delay(5);
-    save_settings_ex(0);
+    write_settings(0);
 }
 
 
@@ -542,12 +544,6 @@ static void sc_set_playing(int on) { synth_set_running(syn, on); }
 static const SyncClock sync_clock = {sc_mode, sc_bpm, sc_set_bpm, sc_position, sc_set_position,
                                      sc_set_rate, sc_playing, sc_set_playing};
 
-static uint64_t now_us(void)
-{
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)(ts.tv_nsec / 1000);
-}
 
 static void tap_tempo(void)
 {
@@ -2057,7 +2053,7 @@ static void logic_update(Uint32 now)
     for (int i = 0; i < P_COUNT; i++) { unsigned v; memcpy(&v, &p[i], sizeof v); h = (h ^ v) * 16777619u; }
     h = (h ^ (unsigned)ui.octave) * 16777619u;
     if (h != last_hash) { last_hash = h; last_change = now; }
-    if (ui.dirty_settings && now - last_change > 4000) save_settings_ex(1);
+    if (ui.dirty_settings && now - last_change > 4000) write_settings(1);
     audio_report(now);
 }
 
