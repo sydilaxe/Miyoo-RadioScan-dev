@@ -133,6 +133,10 @@ static void enable_flush_to_zero(void)
 /* Audio timing, for log.txt: a callback that comes much later than its buffer lasts means the sound dropped out
  * (a pop). Written by the audio thread, read and reported by the main thread. */
 static volatile unsigned aud_late, aud_calls;
+static volatile int aud_rt = -1;          /* real-time priority: 1 granted, 0 refused */
+static volatile double aud_first_ms;      /* when steady audio started, to count missing buffers */
+static volatile float aud_buf_ms;
+static volatile float aud_run_sum_ms;
 static volatile float aud_worst_gap_ms, aud_worst_run_ms;
 
 static uint64_t now_us(void)
@@ -153,11 +157,13 @@ static void audio_cb(void *ud, Uint8 *stream, int len)
         /* real-time priority, so a busy moment elsewhere (an SD card write, drawing) can't starve the sound;
          * the Miyoo runs apps as root, and where it isn't allowed nothing changes */
         struct sched_param sp = {.sched_priority = 50};
-        pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp);
+        aud_rt = pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp) == 0;
         ftz = 1;
     }
     static double last_start;
     double t0 = mono_ms(), buf_ms = len / 4 * 1000.0 / audio_rate;
+    aud_buf_ms = (float)buf_ms;
+    if (aud_calls == 20) aud_first_ms = t0;
     if (last_start > 0 && aud_calls > 20) { /* skip start-up */
         float gap = (float)(t0 - last_start);
         if (gap > buf_ms * 1.6) aud_late++;
@@ -185,21 +191,43 @@ static void audio_cb(void *ud, Uint8 *stream, int len)
     }
     float run = (float)(mono_ms() - t0);
     if (run > aud_worst_run_ms) aud_worst_run_ms = run;
+    aud_run_sum_ms += run;
 }
 
-/* every 10 s, if the audio ran late, say so in log.txt (with how late, and how long the synth itself took) */
+/* Every 10 s, a line in log.txt about the last 10 s: how many buffers the sound card would have gone without
+ * ("missing": the audio thread fell behind real time, which is heard as dropouts), the longest wait between
+ * buffers, the synth's average and slowest run against the time a buffer lasts, and the screen's drawing time.
+ * Quiet unless something is late. */
+static float ui_frame_sum_ms, ui_frame_max_ms;
+static unsigned ui_frames;
+
 static void audio_report(Uint32 now)
 {
     static Uint32 last;
-    static unsigned reported;
+    static unsigned last_calls, last_late, said_rt;
+    static double last_missing;
     if (now - last < 10000) return;
     last = now;
-    if (aud_late != reported) {
-        fprintf(stderr, "audio: %u late buffers so far (worst gap %.1f ms, slowest synth run %.1f ms)\n", aud_late,
-                aud_worst_gap_ms, aud_worst_run_ms);
-        reported = aud_late;
-        aud_worst_gap_ms = aud_worst_run_ms = 0;
+    if (!said_rt && aud_rt >= 0) {
+        fprintf(stderr, "audio: real-time priority %s, %.1f ms per buffer\n", aud_rt ? "on" : "refused", aud_buf_ms);
+        said_rt = 1;
     }
+    unsigned calls = aud_calls, late = aud_late;
+    double missing = aud_first_ms > 0 && aud_buf_ms > 0 ? (mono_ms() - aud_first_ms) / aud_buf_ms - (calls - 20) : 0;
+    if (late != last_late || missing - last_missing > 1.0) {
+        unsigned n = calls - last_calls ? calls - last_calls : 1;
+        fprintf(stderr, "audio: %u late, %.0f missing (total %.0f); longest gap %.1f ms; synth avg %.1f / max %.1f ms "
+                        "of %.1f; screen avg %.1f / max %.1f ms\n",
+                late - last_late, missing - last_missing > 0 ? missing - last_missing : 0, missing > 0 ? missing : 0,
+                aud_worst_gap_ms, aud_run_sum_ms / n, aud_worst_run_ms, aud_buf_ms,
+                ui_frames ? ui_frame_sum_ms / ui_frames : 0, ui_frame_max_ms);
+    }
+    last_calls = calls;
+    last_late = late;
+    last_missing = missing;
+    aud_worst_gap_ms = aud_worst_run_ms = aud_run_sum_ms = 0;
+    ui_frame_sum_ms = ui_frame_max_ms = 0;
+    ui_frames = 0;
 }
 
 /* ================================================================== drawing */
@@ -2284,7 +2312,7 @@ int main(int argc, char **argv)
     pitch_px = screen->pitch / 4;
 
     audio_rate = getenv("RS_RATE") ? atoi(getenv("RS_RATE")) : 48000;
-    int buffer = getenv("RS_BUFFER") ? atoi(getenv("RS_BUFFER")) : 1024;
+    int buffer = getenv("RS_BUFFER") ? atoi(getenv("RS_BUFFER")) : 2048; /* ~43 ms; the MI_AO driver keeps two */
     SDL_AudioSpec want, have;
     memset(&want, 0, sizeof want);
     want.format = AUDIO_S16SYS;
@@ -2369,8 +2397,13 @@ int main(int argc, char **argv)
         held_keys_update(now);
         logic_update(now);
         sync_poll(now_us());
+        double f0 = mono_ms();
         render();
         present();
+        float fms = (float)(mono_ms() - f0);
+        ui_frame_sum_ms += fms;
+        if (fms > ui_frame_max_ms) ui_frame_max_ms = fms;
+        ui_frames++;
         Uint32 spent = SDL_GetTicks() - now; /* ~30 frames per second, whatever the drawing cost */
         if (spent < 33) SDL_Delay(33 - spent);
     }

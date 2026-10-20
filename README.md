@@ -252,7 +252,8 @@ version changes the sound defaults, older settings keep their stations but start
 It stops Onion's audio server while RadioScan runs, uses Onion's MI_AO/MI_GFX-backed SDL 1.2, sets the
 performance CPU governor, and keeps the device awake. It has a few optional switches:
 
-- `RS_BUFFER`: audio buffer size (raise it to 2048 if you hear crackles).
+- `RS_BUFFER`: audio buffer size in frames, 2048 by default (about 43 ms; the Miyoo's driver keeps two of them).
+  1024 responds faster if the sound never drops out.
 - `RS_RATE`: engine rate (48000 by default, the hardware's native rate; 32000 is lighter on the CPU).
 - `RS_ROTATE180`: the picture is turned 180° for the Mini Plus panel by default; set it to 0 if your screen
   shows it upside down.
@@ -279,9 +280,10 @@ LOOP restarts from silence), stutter ratchets and the return from a stutter fade
 live sound, levels and mutes glide, and a station fades in and out when it starts, changes or runs dry.
 
 Settings are saved a few seconds after you stop changing them, in the background, so writing to the SD card never
-interrupts the sound. If you still hear dropouts, `log.txt` notes any late audio buffers (how late, and how long the
-synth took), which tells a slow card or a busy CPU apart from a sound problem; raising `RS_BUFFER` to 2048 in
-`launch.sh` gives more headroom.
+interrupts the sound. If you still hear dropouts, `log.txt` says whether the audio thread got real-time priority and,
+every 10 s while anything is late, how many buffers went missing, the longest wait between buffers, the synth's
+average and slowest run against a buffer's length, and how long the screen takes to draw. That tells a busy CPU
+apart from a slow driver or a sound problem.
 
 ## Limitations
 
