@@ -283,7 +283,11 @@ Settings are saved a few seconds after you stop changing them, in the background
 interrupts the sound. If you still hear dropouts, `log.txt` says whether the audio thread got real-time priority and,
 every 10 s while anything is late, how many buffers went missing, the longest wait between buffers, the synth's
 average and slowest run against a buffer's length, and how long the screen takes to draw. That tells a busy CPU
-apart from a slow driver or a sound problem.
+apart from a slow driver or a sound problem. Around those lines, `log.txt` also keeps a time-stamped record of
+what you did (each button press with the screen and selection it landed on, each setting as it settles, octave
+changes, stations connecting, playing or failing) with every late audio buffer marked `AUDIO LATE` in between, so
+a dropout can be matched to the action that caused it. The record is written in one go every 10 s, so logging
+itself never touches the SD card on a button press.
 
 ## Limitations
 
