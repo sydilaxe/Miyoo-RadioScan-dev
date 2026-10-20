@@ -92,6 +92,7 @@ static struct {
     char toast[128];
     Uint32 toast_until;
     Uint32 grab_flash, menu_armed;
+    int grab_osc;             /* voice of the last grab: 0, 1 or -1 for both */
     Uint32 taps[8];
     int ntaps;
     int pending_station[2];
@@ -1105,7 +1106,9 @@ static void draw_play(void)
         osc_status_line(o, line_, sizeof line_);
         text_center(cx, VOICE_Y + VOICE_R + 48, line_, C_DIM, 19);
     }
-    if (SDL_GetTicks() < ui.grab_flash) text_center(320, VOICE_Y + CENTRE_R + 46, "grabbed", C_LEAF, 0);
+    if (SDL_GetTicks() < ui.grab_flash)
+        for (int o = 0; o < 2; o++)
+            if (ui.grab_osc < 0 || ui.grab_osc == o) text_center(o ? VOICE_BX : VOICE_AX, VOICE_Y + 34, "grabbed", C_TEXT, 0);
 
     int hl = -1;
     if (ui.held[B_R2]) {
@@ -1431,11 +1434,19 @@ static void set_pitch(void)
     synth_note_off(syn, note); /* the pitch stays on the last note */
 }
 
-static void do_grab(void)
+/* a fresh slice from the stream for one voice (0, 1) or both (-1); LIVE voices have nothing to grab */
+static void do_grab(int osc)
 {
-    synth_grab(syn, -1);
+    synth_grab(syn, osc);
+    ui.grab_osc = osc;
     ui.grab_flash = SDL_GetTicks() + 600;
+    for (int o = 0; o < 2; o++)
+        if ((osc < 0 || osc == o) && (int)synth_get_param(syn, P_A_MODE + o * OSC_STRIDE) == OSC_LIVE)
+            toast(osc < 0 ? "grabbed (voice %c is LIVE: nothing to grab)" : "voice %c is LIVE: nothing to grab", 'A' + o);
 }
+
+/* PLAY: the selected rhythm's voice, or both when the cross rhythm is selected */
+static int play_voice(void) { return ui.cell == SEQ_X ? -1 : ui.cell; }
 
 static void hop(int o)
 {
@@ -1559,6 +1570,18 @@ static void dice_section(void)
     ui.dirty_settings = 1;
 }
 
+/* EDIT: the voice the selected setting belongs to, or -1 (both) */
+static int edit_voice(void)
+{
+    if (ui.tab == TAB_MIX) { int g = mix_strips[ui.mix_sel].group; return g == MG_A ? 0 : g == MG_B ? 1 : -1; }
+    if (ui.tab == TAB_RADIO) return -1;
+    int rows[256];
+    const char *hdrs[256];
+    int n = build_rows(ui.tab, rows, hdrs), sel = ui.sel[ui.tab];
+    if (sel < 0 || sel >= n || rows[sel] < P_A_STATION || rows[sel] > P_B_CHANCE) return -1;
+    return rows[sel] >= P_B_STATION;
+}
+
 static void edit_nav(int b)
 {
     if (ui.tab == TAB_MIX) {
@@ -1652,7 +1675,7 @@ static void on_press(int b)
         }
         return;
     }
-    if (b == B_L2 || b == B_X) do_grab();
+    if (b == B_L2 || b == B_X) do_grab(edit_voice());
     if (b == B_Y && ui.tab == TAB_MIX) { /* back to unity / the default */
         const MixStrip *m = &mix_strips[ui.mix_sel];
         synth_set_param(syn, m->id, param_info[m->id].def);
@@ -1663,7 +1686,7 @@ static void on_press(int b)
 
 static void on_release(int b)
 {
-    if (ui.screen == SCR_PLAY && ui.overlay == OV_NONE && b == B_L2 && !ui.l2_used) do_grab(); /* a tap of L2 */
+    if (ui.screen == SCR_PLAY && ui.overlay == OV_NONE && b == B_L2 && !ui.l2_used) do_grab(play_voice()); /* a tap of L2 */
 }
 
 static void held_keys_update(Uint32 now)

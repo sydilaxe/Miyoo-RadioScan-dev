@@ -108,7 +108,7 @@ ring is outlined, and every change shows its pattern briefly, like `A  E(5,8) >2
 | hold L2 + up / down | steps |
 | hold L2 + left / right | rate (right = faster) |
 | hold L2 + Y / X | gate length shorter / longer |
-| tap L2 | grab fresh slices from both streams |
+| tap L2 | grab a fresh slice for the selected voice (both voices when the cross rhythm is selected) |
 | hold R2 + D-pad | up/down: filter brighter / darker; left/right: morph toward A / B |
 | hold R2 + X / B | fold more / less |
 | hold R2 + Y / A | space less / more |
@@ -124,7 +124,7 @@ ring is outlined, and every change shows its pattern briefly, like `A  E(5,8) >2
 |---|---|
 | L1 / R1 | previous / next page |
 | Up / Down | choose a row; Left / Right change it (hold B for fine steps) |
-| X / L2 | grab |
+| X / L2 | grab a fresh slice for the voice of the selected setting (both when it isn't a voice setting) |
 | Y | roll the dice on the selected section |
 | SELECT | tap tempo |
 | START | back to PLAY |
