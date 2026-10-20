@@ -15,19 +15,25 @@
 #define VOICE_FIELDS(X)                                                                                       \
     P_##X##_STATION, P_##X##_MODE, P_##X##_TUNE, P_##X##_SIZE, P_##X##_TEXTURE, P_##X##_FOCUS, P_##X##_LEVEL, \
     P_##X##_PAN, P_##X##_OSC, P_##X##_OSC_MIX,                                                                             \
-    P_##X##_RHYTHM, P_##X##_STEPS, P_##X##_PULSES, P_##X##_ROTATE, P_##X##_RATE, P_##X##_LENGTH, P_##X##_CHANCE
+    P_##X##_GATE_ON, P_##X##_GATE_STEPS, P_##X##_GATE_PULSES, P_##X##_GATE_ROT,                                 \
+    P_##X##_RATE, P_##X##_LENGTH, P_##X##_ATTACK, P_##X##_RELEASE, P_##X##_CHANCE
 
 enum {
     VOICE_FIELDS(A), /* VOICE B id = VOICE A id + OSC_STRIDE */
     VOICE_FIELDS(B),
     P_BPM, P_SYNC,
-    P_VOCODE, P_VOCODE_AMT, P_FM, P_FM_DIR, P_RING, P_MORPH, P_CONVERSE,
+    P_VOCODE, P_VOCODE_AMT, P_BANDS, P_FM, P_FM_DIR, P_RING, P_MORPH, P_CONVERSE,
     P_ROOT,
-    P_TONE, P_RESO, P_FOLD, P_ECHO, P_SPACE, P_VOLUME,
+    P_TONE, P_RESO, P_LOW, P_HIGH, P_DRIVE, P_FOLD, P_CRUSH,
+    P_ECHO, P_SPACE, P_WIDTH, P_VOLUME,
     P_COUNT
 };
 
 #define OSC_STRIDE (P_B_STATION - P_A_STATION)
+/* each voice has one Euclidean rhythm (its gate) that opens and closes it */
+enum { CELL_GATE, NCELL };
+#define CELL_STRIDE 4
+#define CELL_PARAM(osc, cell, field) (P_A_GATE_ON + (osc) * OSC_STRIDE + (cell) * CELL_STRIDE + (field)) /* field 0 on, 1 steps, 2 pulses, 3 rotate */
 
 enum { OSC_LIVE, OSC_LOOP, OSC_WAVE, OSC_GRAIN };
 enum { FOCUS_ALL, FOCUS_VOICE, FOCUS_MUSIC };
@@ -87,8 +93,8 @@ void synth_process(Synth *s, const float *inA, const float *inB, float *out, int
 
 /* display */
 int synth_current_note(const Synth *s);
-int synth_rhythm_step(const Synth *s, int osc);
-float synth_rhythm_flash(const Synth *s, int osc);     /* 1 on a hit, fading */
+int synth_cell_step(const Synth *s, int osc, int cell);    /* current step of a rhythm cell */
+float synth_cell_flash(const Synth *s, int osc, int cell);  /* 1 on a hit, fading */
 float synth_gate_value(const Synth *s, int osc);       /* how open the voice is now, 0..1 */
 float synth_speechness(const Synth *s, int osc);       /* 0 music .. 1 speech */
 int synth_voice_state(const Synth *s, int osc);        /* VS_* */

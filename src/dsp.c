@@ -18,6 +18,8 @@ static const char *const offon[] = {"OFF", "ON", NULL};
 static const char *const osc_waves[] = {"OFF", "SINE", "TRIANGLE", "SAW", "SQUARE", NULL};
 static const char *const vocodes[] = {"OFF", "A SPEAKS THRU B", "B SPEAKS THRU A", NULL};
 static const char *const fm_dirs[] = {"B BENDS A", "A BENDS B", NULL};
+static const char *const band_names[] = {"5", "8", "13", "21", "34", NULL};
+static const int band_counts[] = {5, 8, 13, 21, 34};
 static const char *const sync_modes[] = {"OFF", "AUTO", "LEAD", "FOLLOW", NULL};
 static const char *const roots[] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B", NULL};
 static const char *const rates[] = {"1/32", "1/16", "1/8T", "1/8", "1/8.", "5/16", "1/4T", "1/4", "1/4.",
@@ -34,6 +36,12 @@ int euclid_hit(int steps, int pulses, int rotate, int step)
     return (j * pulses) % steps < pulses;
 }
 
+#define CELL_PARAMS(X, x, C, key, label, on, steps, pulses)                                                     \
+    [P_##X##_##C##_ON] = {x "_" key "_on", label, PAGE_RHYTHM, 0, 1, on, 1, 0, "", offon},                       \
+    [P_##X##_##C##_STEPS] = {x "_" key "_steps", label " Steps", PAGE_RHYTHM, 1, 16, steps, 1, 0, "int", NULL},  \
+    [P_##X##_##C##_PULSES] = {x "_" key "_pulses", label " Pulses", PAGE_RHYTHM, 0, 16, pulses, 1, 0, "int", NULL}, \
+    [P_##X##_##C##_ROT] = {x "_" key "_rot", label " Rotate", PAGE_RHYTHM, 0, 15, 0, 1, 0, "int", NULL}
+
 #define VOICE_PARAMS(X, x, mode, size, tex, lvl, pan, steps, pulses, length)                                \
     [P_##X##_STATION] = {x "_station", "Station", PAGE_VOICES, -1, 511, -1, 1, 0, "station", NULL},              \
     [P_##X##_MODE] = {x "_engine", "Engine", PAGE_VOICES, 0, 3, mode, 1, 0, "", osc_modes},                      \
@@ -45,12 +53,11 @@ int euclid_hit(int steps, int pulses, int rotate, int step)
     [P_##X##_PAN] = {x "_pan", "Pan", PAGE_VOICES, -1, 1, pan, 0.05f, 0, "pan", NULL},                           \
     [P_##X##_OSC] = {x "_osc", "Oscillator", PAGE_VOICES, 0, 4, 0, 1, 0, "", osc_waves},                         \
     [P_##X##_OSC_MIX] = {x "_osc_mix", "Osc Mix", PAGE_VOICES, 0, 1, 0, 0.02f, 0, "", NULL},                     \
-    [P_##X##_RHYTHM] = {x "_rhythm", "Rhythm", PAGE_RHYTHM, 0, 1, 1, 1, 0, "", offon},                           \
-    [P_##X##_STEPS] = {x "_steps", "Steps", PAGE_RHYTHM, 1, 16, steps, 1, 0, "int", NULL},                       \
-    [P_##X##_PULSES] = {x "_pulses", "Pulses", PAGE_RHYTHM, 0, 16, pulses, 1, 0, "int", NULL},                   \
-    [P_##X##_ROTATE] = {x "_rotate", "Rotate", PAGE_RHYTHM, 0, 15, 0, 1, 0, "int", NULL},                        \
+    CELL_PARAMS(X, x, GATE, "gate", "Rhythm", 1, steps, pulses),                                                  \
     [P_##X##_RATE] = {x "_rate", "Rate", PAGE_RHYTHM, 0, 14, 3, 1, 0, "", rates},                                \
-    [P_##X##_LENGTH] = {x "_length", "Length", PAGE_RHYTHM, 0.05f, 1, length, 0.05f, 0, "", NULL},               \
+    [P_##X##_LENGTH] = {x "_length", "Gate Length", PAGE_RHYTHM, 0.05f, 1, length, 0.05f, 0, "", NULL},          \
+    [P_##X##_ATTACK] = {x "_attack", "Gate Attack", PAGE_RHYTHM, 0, 1, 0, 0.05f, 0, "", NULL},                   \
+    [P_##X##_RELEASE] = {x "_release", "Gate Release", PAGE_RHYTHM, 0, 1, 0.25f, 0.05f, 0, "", NULL},            \
     [P_##X##_CHANCE] = {x "_chance", "Chance", PAGE_RHYTHM, 0, 1, 1, 0.05f, 0, "", NULL}
 
 const ParamInfo param_info[P_COUNT] = {
@@ -62,6 +69,7 @@ const ParamInfo param_info[P_COUNT] = {
     [P_SYNC]   = {"sync", "Wi-Fi Sync", PAGE_RHYTHM, 0, 3, 1, 1, 0, "", sync_modes},
     [P_VOCODE]     = {"vocode", "Vocode", PAGE_ENGINE, 0, 2, 0, 1, 0, "", vocodes},
     [P_VOCODE_AMT] = {"vocode_amt", "Vocode Amount", PAGE_ENGINE, 0, 1, 0.8f, 0.05f, 0, "", NULL},
+    [P_BANDS]      = {"bands", "Vocode Bands", PAGE_ENGINE, 0, 4, 2, 1, 0, "", band_names},
     [P_FM]         = {"fm", "FM", PAGE_ENGINE, 0, 1, 0, 0.02f, 0, "", NULL},
     [P_FM_DIR]     = {"fm_dir", "FM Direction", PAGE_ENGINE, 0, 1, 0, 1, 0, "", fm_dirs},
     [P_RING]       = {"ring", "Ring Mod", PAGE_ENGINE, 0, 1, 0, 0.05f, 0, "", NULL},
@@ -70,9 +78,14 @@ const ParamInfo param_info[P_COUNT] = {
     [P_ROOT]   = {"root", "Pitch Root", PAGE_ENGINE, 0, 11, 0, 1, 0, "", roots},
     [P_TONE]   = {"tone", "Filter", PAGE_ENGINE, -1, 1, 0, 0.04f, 0, "tone", NULL},
     [P_RESO]   = {"reso", "Resonance", PAGE_ENGINE, 0, 1, 0.2f, 0.05f, 0, "", NULL},
+    [P_LOW]    = {"low", "Bass", PAGE_ENGINE, -12, 12, 0, 1, 0, "dB", NULL},
+    [P_HIGH]   = {"high", "Treble", PAGE_ENGINE, -12, 12, 0, 1, 0, "dB", NULL},
+    [P_DRIVE]  = {"drive", "Drive", PAGE_ENGINE, 0, 1, 0, 0.04f, 0, "", NULL},
     [P_FOLD]   = {"fold", "Fold", PAGE_ENGINE, 0, 1, 0, 0.04f, 0, "", NULL},
+    [P_CRUSH]  = {"crush", "Crush", PAGE_ENGINE, 0, 1, 0, 0.04f, 0, "", NULL},
     [P_ECHO]   = {"echo", "Echo", PAGE_ENGINE, 0, 1, 0.15f, 0.05f, 0, "", NULL},
     [P_SPACE]  = {"space", "Space", PAGE_ENGINE, 0, 1, 0.25f, 0.05f, 0, "", NULL},
+    [P_WIDTH]  = {"width", "Stereo Width", PAGE_ENGINE, 0, 2, 1, 0.05f, 0, "", NULL},
     [P_VOLUME] = {"volume", "Volume", PAGE_ENGINE, -24, 12, 0, 1, 0, "dB", NULL},
 };
 
@@ -83,14 +96,14 @@ const char *param_section(int id)
 {
     int o = osc_of(id);
     if (o >= 0) {
-        if (osc_field(id) >= P_A_RHYTHM) return o ? "RHYTHM B" : "RHYTHM A";
+        if (osc_field(id) >= P_A_GATE_ON) return o ? "RHYTHM B" : "RHYTHM A";
         return o ? "VOICE B" : "VOICE A";
     }
     if (id <= P_SYNC) return "CLOCK";
     if (id <= P_CONVERSE) return "CROSS";
     if (id <= P_ROOT) return "KEY";
-    if (id <= P_FOLD) return "SHAPE";
-    if (id <= P_SPACE) return "SPACE";
+    if (id <= P_CRUSH) return "SHAPE";
+    if (id <= P_WIDTH) return "SPACE";
     return "OUTPUT";
 }
 
@@ -208,10 +221,10 @@ void param_format_ctx(int id, const float *params, char *buf, int n)
 #define TAP_LEN 2048
 #define BLOCK 16
 #define GRAIN_SPREAD_S 0.6f
+#define BANDS 34            /* most vocoder bands */
 
 typedef struct { float ic1, ic2; } Svf;
 typedef struct { float a1, a2, a3; } SvfCoef;
-#define BANDS 14
 
 typedef struct {
     double pos, rate;
@@ -251,8 +264,9 @@ typedef struct {
     float duck;           /* converse gain */
     /* rhythm */
     long step_abs;
-    int step_idx, hit;
-    float gate, flash;
+    int cell_idx[NCELL], cell_hit[NCELL];
+    float cell_flash[NCELL];
+    float gate;
     float level;          /* display follower */
 } Osc;
 
@@ -273,6 +287,9 @@ struct Synth {
     SvfCoef bank_c[BANDS];
     Svf bank_a[BANDS], bank_b[BANDS];
     float env_a[BANDS], env_b[BANDS];
+    int nbands;
+    /* shaping state: bass / treble split, crush hold */
+    float lo_lp[2], hi_lp[2], crush_hold[2], crush_ph;
     float *dly;
     unsigned dly_w;
     float dly_time_s, dly_lp[2];
@@ -306,6 +323,23 @@ static float rnd01(Synth *s)
 {
     s->rng = s->rng * 1664525u + 1013904223u;
     return (float)(s->rng >> 8) / 16777216.0f;
+}
+
+/* vocoder / morph filterbank: n bands from 120 Hz to 7 kHz, narrower as there are more of them */
+static void bank_setup(Synth *s, int n)
+{
+    float q = 0.45f * n;
+    for (int b = 0; b < n; b++) {
+        float fc = 120.0f * powf(7000.0f / 120.0f, (float)b / (n - 1));
+        if (fc > s->fs * 0.45f) fc = s->fs * 0.45f;
+        float g = tanf((float)M_PI * fc / s->fs), k = 1.0f / q;
+        s->bank_c[b].a1 = 1.0f / (1.0f + g * (g + k));
+        s->bank_c[b].a2 = g * s->bank_c[b].a1;
+        s->bank_c[b].a3 = g * s->bank_c[b].a2;
+    }
+    memset(s->bank_a, 0, sizeof s->bank_a);
+    memset(s->bank_b, 0, sizeof s->bank_b);
+    s->nbands = n;
 }
 
 Synth *synth_create(int sample_rate)
@@ -343,14 +377,7 @@ Synth *synth_create(int sample_rate)
     s->lev_env = 0.04f;
     s->s_vol = 1.0f;
     s->dly_time_s = 0.3f * s->fs;
-    for (int b = 0; b < BANDS; b++) { /* 14 bands, 120 Hz .. 7 kHz, Q 6 */
-        float fc = 120.0f * powf(7000.0f / 120.0f, (float)b / (BANDS - 1));
-        if (fc > s->fs * 0.45f) fc = s->fs * 0.45f;
-        float g = tanf((float)M_PI * fc / s->fs), k = 1.0f / 6.0f;
-        s->bank_c[b].a1 = 1.0f / (1.0f + g * (g + k));
-        s->bank_c[b].a2 = g * s->bank_c[b].a1;
-        s->bank_c[b].a3 = g * s->bank_c[b].a2;
-    }
+    bank_setup(s, 13);
     return s;
 }
 
@@ -372,8 +399,8 @@ void synth_set_param(Synth *s, int id, float v) { s->p[id] = param_clamp(id, v);
 float synth_get_param(const Synth *s, int id) { return s->p[id]; }
 const float *synth_params(const Synth *s) { return s->p; }
 int synth_current_note(const Synth *s) { return s->last_note; }
-int synth_rhythm_step(const Synth *s, int o) { return s->osc[o].step_idx; }
-float synth_rhythm_flash(const Synth *s, int o) { return s->osc[o].flash; }
+int synth_cell_step(const Synth *s, int o, int c) { return s->osc[o].cell_idx[c]; }
+float synth_cell_flash(const Synth *s, int o, int c) { return s->osc[o].cell_flash[c]; }
 float synth_gate_value(const Synth *s, int o) { return s->osc[o].gate; }
 float synth_speechness(const Synth *s, int o) { return s->osc[o].vad.speech; }
 int synth_voice_state(const Synth *s, int o) { return s->osc[o].vad.state; }
@@ -445,13 +472,19 @@ static void dice_range(int id, float *lo, float *hi)
     case P_A_SIZE: *lo = 2; *hi = 600; break;
     case P_A_LEVEL: *lo = 0.6f; *hi = 1; break;
     case P_A_PAN: *lo = -0.7f; *hi = 0.7f; break;
-    case P_A_STEPS: *lo = 3; *hi = 16; break;
+    case P_A_GATE_STEPS: *lo = 3; *hi = 16; break;
+    case P_A_ATTACK: *lo = 0; *hi = 0.5f; break;
+    case P_A_RELEASE: *lo = 0; *hi = 0.6f; break;
     case P_A_RATE: *lo = 1; *hi = 11; break;
     case P_A_LENGTH: *lo = 0.2f; *hi = 1; break;
     case P_A_CHANCE: *lo = 0.5f; *hi = 1; break;
     case P_TONE: *lo = -0.7f; *hi = 0.5f; break;
     case P_RESO: *lo = 0; *hi = 0.7f; break;
     case P_FOLD: *lo = 0; *hi = 0.6f; break;
+    case P_DRIVE: *lo = 0; *hi = 0.5f; break;
+    case P_CRUSH: *lo = 0; *hi = 0.4f; break;
+    case P_LOW: case P_HIGH: *lo = -6; *hi = 6; break;
+    case P_WIDTH: *lo = 0.6f; *hi = 1.6f; break;
     case P_ECHO: *lo = 0; *hi = 0.5f; break;
     case P_SPACE: *lo = 0; *hi = 0.7f; break;
     case P_A_OSC_MIX: *lo = 0; *hi = 0.4f; break;
@@ -491,10 +524,12 @@ void synth_randomize(Synth *s, const int *ids, int n, float amount)
         }
         s->p[id] = param_clamp(id, v);
     }
-    for (int o = 0; o < 2; o++) { /* keep pulses <= steps */
-        float *st = &s->p[P_A_STEPS + o * OSC_STRIDE];
-        if (st[1] > st[0]) st[1] = floorf(1 + rnd01(s) * (st[0] - 1));
-    }
+    for (int o = 0; o < 2; o++) /* keep pulses <= steps and rotation inside the pattern */
+        for (int c = 0; c < NCELL; c++) {
+            float *st = &s->p[CELL_PARAM(o, c, 1)];
+            if (st[1] > st[0]) st[1] = floorf(1 + rnd01(s) * (st[0] - 1));
+            if (st[2] >= st[0]) st[2] = floorf(rnd01(s) * st[0]);
+        }
 }
 
 void synth_dice(Synth *s, int which)
@@ -503,7 +538,7 @@ void synth_dice(Synth *s, int which)
     for (int i = 0; i < P_COUNT; i++) {
         int pg = param_info[i].page;
         int o = osc_of(i);
-        int rhythm = o >= 0 && osc_field(i) >= P_A_RHYTHM;
+        int rhythm = o >= 0 && osc_field(i) >= P_A_GATE_ON;
         if (which == DICE_SOUND && ((pg == PAGE_VOICES) || (pg == PAGE_ENGINE))) ids[n++] = i;
         if (which == DICE_RHYTHM && rhythm) ids[n++] = i;
         if (which == DICE_MUTATE && !param_info[i].choices) ids[n++] = i;
@@ -529,8 +564,11 @@ void synth_dice(Synth *s, int which)
         if (rnd01(s) < 0.7f) s->p[P_CONVERSE] = 0;
     }
     if (which == DICE_RHYTHM)
-        for (int o = 0; o < 2; o++)
-            s->p[P_A_RHYTHM + o * OSC_STRIDE] = rnd01(s) < 0.85f ? 1 : 0;
+        for (int o = 0; o < 2; o++) s->p[CELL_PARAM(o, CELL_GATE, 0)] = rnd01(s) < 0.85f ? 1 : 0;
+    if (which == DICE_SOUND) {
+        if (rnd01(s) < 0.6f) s->p[P_DRIVE] = 0;
+        if (rnd01(s) < 0.7f) s->p[P_CRUSH] = 0;
+    }
 }
 
 /* ------------------------------------------------------------------ voice engines */
@@ -779,32 +817,36 @@ static void vad_tick(Vad *v, float m)
 
 /* ------------------------------------------------------------------ rhythm */
 
-/* Each voice's Euclidean rhythm opens it on every pulse: a quick fade in, held for Length of the step,
- * then a soft fade out. A LOOP voice also restarts its slice on every pulse. Rhythm OFF = always open. */
+/* Each voice's Euclidean rhythm opens it on every pulse: attack, hold for Length of the step, release.
+ * A LOOP voice also restarts its slice on every pulse. Rhythm off = the voice plays continuously. */
 static float rhythm_eval(Synth *s, int idx, double beat)
 {
     Osc *o = &s->osc[idx];
     const float *p = s->p + idx * OSC_STRIDE;
-    if (!(int)p[P_A_RHYTHM]) return 1.0f;
     float step_beats = rate_beats[(int)p[P_A_RATE]];
+    float step_s = step_beats * 60.0f / s->p[P_BPM];
     double sp = beat / step_beats;
     long step = (long)floor(sp);
-    int steps = (int)p[P_A_STEPS];
     if (step != o->step_abs) {
         o->step_abs = step;
-        o->step_idx = (int)(step % steps);
-        o->hit = euclid_hit(steps, (int)p[P_A_PULSES], (int)p[P_A_ROTATE], o->step_idx) && rnd01(s) < p[P_A_CHANCE];
-        if (o->hit) {
-            o->flash = 1;
+        int steps = (int)p[P_A_GATE_STEPS];
+        o->cell_idx[CELL_GATE] = (int)(step % steps);
+        o->cell_hit[CELL_GATE] = (int)p[P_A_GATE_ON] &&
+                                 euclid_hit(steps, (int)p[P_A_GATE_PULSES], (int)p[P_A_GATE_ROT], o->cell_idx[CELL_GATE]) &&
+                                 rnd01(s) < p[P_A_CHANCE];
+        if (o->cell_hit[CELL_GATE]) {
+            o->cell_flash[CELL_GATE] = 1;
             if ((int)p[P_A_MODE] == OSC_LOOP) o->phase = 0;
             if ((int)p[P_A_MODE] == OSC_GRAIN) o->grain_timer = 0;
         }
     }
-    if (!o->hit) return 0.0f;
+    if (!(int)p[P_A_GATE_ON]) return 1.0f;
+    if (!o->cell_hit[CELL_GATE]) return 0.0f;
     float t = (float)(sp - step), len = p[P_A_LENGTH];
-    float step_s = step_beats * 60.0f / s->p[P_BPM];
-    float att = 0.004f / step_s, rel = 0.25f * len; /* 4 ms fade in, release a quarter of the length */
-    if (att > 0.2f) att = 0.2f;
+    float att = p[P_A_ATTACK] * len, min_att = 0.004f / step_s; /* never faster than 4 ms */
+    if (att < min_att) att = min_att;
+    if (att > len) att = len;
+    float rel = p[P_A_RELEASE] * (1.0f - len) + min_att;
     float g;
     if (t < att) g = t / att;
     else if (t < len) g = 1;
@@ -914,7 +956,7 @@ void synth_process(Synth *s, const float *inA, const float *inB, float *out, int
             freq[o] = 440.0f * exp2f((semi - 69.0f) / 12.0f);
             float t = s->p[P_A_LEVEL + o * OSC_STRIDE];
             s->s_lvl[o] += (t - s->s_lvl[o]) * 0.15f;
-            s->osc[o].flash *= expf(-n / (0.15f * fs));
+            for (int c = 0; c < NCELL; c++) s->osc[o].cell_flash[c] *= expf(-n / (0.15f * fs));
         }
         s->s_vol += (db2lin(s->p[P_VOLUME]) - s->s_vol) * 0.15f;
 
@@ -925,6 +967,12 @@ void synth_process(Synth *s, const float *inA, const float *inB, float *out, int
         float k = 2.0f - 1.9f * s->p[P_RESO];
         float a1 = 1.0f / (1.0f + g * (g + k)), a2 = g * a1, a3 = g * a2;
         float fold = s->p[P_FOLD];
+        float g_low = db2lin(s->p[P_LOW]) - 1.0f, g_high = db2lin(s->p[P_HIGH]) - 1.0f;
+        int eq_on = fabsf(s->p[P_LOW]) > 0.1f || fabsf(s->p[P_HIGH]) > 0.1f;
+        float drive = s->p[P_DRIVE], dgain = 1.0f + drive * 9.0f, dcomp = 1.0f / (1.0f + drive * 2.0f);
+        float crush = s->p[P_CRUSH], cq = exp2f(15.0f - crush * 12.0f), chold = 1.0f + crush * crush * 24.0f;
+        float width = s->p[P_WIDTH];
+        const float k_lo = 1.0f - expf(-2.0f * (float)M_PI * 250.0f / fs), k_hi = 1.0f - expf(-2.0f * (float)M_PI * 3000.0f / fs);
         float echo = s->p[P_ECHO], space = s->p[P_SPACE];
         float dtarget = 0.75f * 60.0f / s->p[P_BPM] * fs; /* dotted eighth */
         if (dtarget > DLY_N - 4) dtarget = DLY_N - 4;
@@ -936,9 +984,11 @@ void synth_process(Synth *s, const float *inA, const float *inB, float *out, int
         int fm_dir = (int)s->p[P_FM_DIR], vocode = (int)s->p[P_VOCODE];
         float vamt = s->p[P_VOCODE_AMT];
         int bank_on = vocode != VOC_OFF || morph > 0.01f;
+        int nb = band_counts[(int)s->p[P_BANDS]];
+        if (nb != s->nbands) bank_setup(s, nb);
         float g_voc[BANDS], g_ma[BANDS], g_mb[BANDS];
         if (bank_on)
-            for (int b = 0; b < BANDS; b++) {
+            for (int b = 0; b < nb; b++) {
                 float na = s->env_a[b] + 1e-3f, nb = s->env_b[b] + 1e-3f;
                 g_voc[b] = vocode == VOC_A_TO_B ? s->env_a[b] / nb : s->env_b[b] / na;
                 if (morph > 0.01f) { /* both voices steered toward an envelope between theirs */
@@ -1022,7 +1072,7 @@ void synth_process(Synth *s, const float *inA, const float *inB, float *out, int
             }
             if (bank_on) {
                 float voc = 0, mor = 0;
-                for (int b = 0; b < BANDS; b++) {
+                for (int b = 0; b < nb; b++) {
                     float ba = band_bp(&s->bank_a[b], am, &s->bank_c[b]);
                     float bb = band_bp(&s->bank_b[b], bm, &s->bank_c[b]);
                     float ea = fabsf(ba), eb = fabsf(bb);
@@ -1058,12 +1108,28 @@ void synth_process(Synth *s, const float *inA, const float *inB, float *out, int
                     f->ic2 = 2 * v2 - f->ic2;
                     v = fmode == 1 ? v2 : v - k * v1 - v2;
                 }
+                if (eq_on) { /* bass and treble shelves around 250 Hz and 3 kHz */
+                    s->lo_lp[c] += (v - s->lo_lp[c]) * k_lo;
+                    s->hi_lp[c] += (v - s->hi_lp[c]) * k_hi;
+                    v += s->lo_lp[c] * g_low + (v - s->hi_lp[c]) * g_high;
+                }
                 tf += v;
+                if (drive > 0.01f) v = fast_tanh(v * dgain) * dcomp; /* warm saturation */
                 v = synth_fold_preview(v, fold);
                 tfo += v;
                 x[c] = v;
             }
             s->tap[TAP_FILTER][tw] = 0.5f * tf;
+            if (crush > 0.01f) { /* fewer bits and a lower sample rate */
+                s->crush_ph += 1.0f;
+                if (s->crush_ph >= chold) {
+                    s->crush_ph -= chold;
+                    for (int c = 0; c < 2; c++) s->crush_hold[c] = floorf(x[c] * cq + 0.5f) / cq;
+                }
+                x[0] = s->crush_hold[0];
+                x[1] = s->crush_hold[1];
+                tfo = x[0] + x[1];
+            }
             s->tap[TAP_FOLD][tw] = 0.5f * tfo;
 
             /* echo send: ping-pong at a dotted eighth */
@@ -1091,6 +1157,12 @@ void synth_process(Synth *s, const float *inA, const float *inB, float *out, int
                 reverb_tick(s, x[0], x[1], &wl, &wr, rsize, rgains);
                 x[0] += wl * space * 1.2f;
                 x[1] += wr * space * 1.2f;
+            }
+
+            if (fabsf(width - 1.0f) > 0.01f) { /* stereo width: 0 mono .. 2 extra wide */
+                float mid = 0.5f * (x[0] + x[1]), side = 0.5f * (x[0] - x[1]) * width;
+                x[0] = mid + side;
+                x[1] = mid - side;
             }
 
             /* leveller: brings the mix to a steady loudness (-6 .. +12 dB), slow enough not to pump */

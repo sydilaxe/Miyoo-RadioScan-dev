@@ -20,11 +20,12 @@ a wavefolder, echo and space.
   music; either voice can play any station. An optional **oscillator** (sine,
   triangle, saw or square) can be mixed into each voice for a cleaner tone or a carrier for cross-modulation.
   It's off by default; the radio comes first.
-- **Two rhythms.** Each voice has a Euclidean rhythm (steps, pulses, rotate, rate, length, chance) that decides
-  when it sounds. Every pulse opens the voice for its length, with soft edges. With the rhythm off, the voice
-  plays continuously. Tap tempo (SELECT) and Wi-Fi sync drive both rhythms.
+- **Two rhythms.** Each voice has a Euclidean rhythm that decides when it sounds: steps, pulses, rotate, rate
+  and chance, and a gate shape (attack, length, release) from soft swells to sharp chops. With the rhythm off,
+  the voice plays continuously. Both rhythms are played directly on the PLAY page, as on hi5. Tap tempo
+  (SELECT) and Wi-Fi sync drive both.
 - **Cross-modulation.**
-  - **Vocode:** A speaks through B, or B through A.
+  - **Vocode:** A speaks through B, or B through A, with 5, 8, 13, 21 or 34 bands.
   - **FM:** one voice bends the other's pitch.
   - **Ring mod.**
   - **Morph:** blends the two voices' spectra from A toward B.
@@ -33,7 +34,9 @@ a wavefolder, echo and space.
     dialogue. It's made for two speech stations, but works on anything.
 - **Sound.**
   - **Filter:** one knob from dark (low-pass) through open to thin (high-pass), plus resonance.
-  - **Fold**, then **echo** (a dotted-eighth ping-pong) and **space** (reverb).
+  - **Bass** and **treble** shelves.
+  - **Drive** (warm saturation), **fold**, and **crush** (fewer bits, lower sample rate).
+  - **Echo** (a dotted-eighth ping-pong), **space** (reverb) and **stereo width**.
   - **Volume**, and a leveller that keeps the overall loudness steady so the radio comes through clearly.
 - **Stations.** 35 are preloaded and you can add more three ways:
   1. Edit `stations.txt` on the SD card (`Name|URL|voice|music|sound`).
@@ -48,8 +51,9 @@ a wavefolder, echo and space.
 The PLAY page is for performing: the two rhythms and the sound, live.
 
 - **Voice circles (left A, right B).** A faint inner form shows the raw broadcast; a bright outer form shows
-  the voice as it sounds. The rhythm runs as dots around the rim: coloured dots are pulses, and the white one
-  is the current step. Five dots underneath show how speech-like the station is.
+  the voice as it sounds. Five dots underneath show how speech-like the station is.
+- **Rhythm rings.** Under each voice: its steps around a ring, with coloured pulses, a white ring on the current
+  step, and pulses/steps in the middle.
 - **Spectrum backdrop.** A soft frequency spectrum behind the circles. Each band's height is the output level,
   and its colour shows which voice dominates it: leaf green for A, amber for B.
 - **Converse.** The voice holding the floor gets a bright ring.
@@ -85,13 +89,20 @@ With the card mounted on a computer, `make install SD=/path/to/card` copies the 
 
 **PLAY** (performance)
 
+The two rhythm rings under the voices are played like hi5's pattern cells. The selected ring is outlined, and
+every change shows its pattern briefly, like `A  E(5,8) >2  1/8`.
+
 | Button | Action |
 |---|---|
-| D-pad up / down | rhythm A: more / fewer pulses |
-| D-pad left / right | rhythm A: rotate |
-| X / B | rhythm B: more / fewer pulses |
-| Y / A | rhythm B: rotate |
-| hold L2 + D-pad / ABXY | steps (up/down, X/B) and rate (left/right, Y/A) of that rhythm |
+| D-pad left / right | select voice A or B's rhythm |
+| D-pad up / down | more / fewer pulses |
+| A | rhythm on / off (off = the voice plays continuously) |
+| B | fewer pulses, wrapping back to all |
+| X | rotate |
+| Y | a new random pattern |
+| hold L2 + up / down | steps |
+| hold L2 + left / right | rate (right = faster) |
+| hold L2 + Y / X | gate length shorter / longer |
 | tap L2 | grab fresh slices from both streams |
 | hold R2 + D-pad | up/down: filter brighter / darker; left/right: morph toward A / B |
 | hold R2 + X / B | fold more / less |

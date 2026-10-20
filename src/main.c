@@ -86,6 +86,7 @@ static struct {
     int held[B_COUNT];
     Uint32 held_since[B_COUNT], last_repeat[B_COUNT];
     int l2_used;              /* L2 acted as a modifier while held (otherwise a tap = grab) */
+    int cell;                 /* PLAY: selected rhythm cell, 0..5 (A gate, stut, grab, B gate, stut, grab) */
     char toast[128];
     Uint32 toast_until;
     Uint32 grab_flash, menu_armed;
@@ -962,32 +963,42 @@ static void draw_voice(int o, int cx, int cy, int R)
 {
     Uint32 col = osc_col(o);
     const float *p = synth_params(syn);
-    int base = o * OSC_STRIDE;
     float gate = synth_gate_value(syn, o);
     disc(cx, cy, R, C_PANEL);
     circle(cx, cy, R, mix_col(C_PANEL2, col, gate * synth_osc_level(syn, o) * 2.0f));
     if (synth_floor(syn) == o) { circle(cx, cy, R + 1, col); circle(cx, cy, R + 2, col); } /* converse: has the floor */
     draw_bloom(cx, cy, R * 0.26f, R * 0.48f, R * 0.5f, o ? TAP_RAW_B : TAP_RAW_A, mix_col(C_PANEL, col, 0.45f), 0);
-    draw_bloom(cx, cy, R * 0.52f, R * 0.9f, R + 12, o ? TAP_B : TAP_A, col, 0);
-    int steps = (int)p[P_A_STEPS + base], pulses = (int)p[P_A_PULSES + base], rot = (int)p[P_A_ROTATE + base];
-    if ((int)p[P_A_RHYTHM + base]) {
-        int cur = synth_rhythm_step(syn, o);
-        float fl = synth_rhythm_flash(syn, o);
-        for (int i = 0; i < steps; i++) {
-            int x, y;
-            polar(cx, cy, R + 11, (float)i / steps, &x, &y);
-            int hit = euclid_hit(steps, pulses, rot, i);
-            if (i == cur && hit) disc(x, y, 5 + (int)(fl * 3), mix_col(col, C_TEXT, fl));
-            else if (hit) disc(x, y, 5, col);
-            else if (i == cur) circle(x, y, 5, C_TEXT);
-            else disc(x, y, 2, C_PANEL2);
-        }
-    } else {
-        circle(cx, cy, R + 11, mix_col(C_BG, col, 0.5f)); /* rhythm off: always open */
-    }
+    draw_bloom(cx, cy, R * 0.52f, R * 0.92f, R + 10, o ? TAP_B : TAP_A, col, 0);
     static const char *const mn[] = {"live", "loop", "wave", "grain"};
-    text_center(cx, cy - 9, mn[(int)p[P_A_MODE + base]], C_TEXT, 0);
+    text_center(cx, cy - 9, mn[(int)p[P_A_MODE + o * OSC_STRIDE]], C_TEXT, 0);
     disc(cx, cy + 16, 4, state_col(o));
+}
+
+/* a voice's rhythm, hi5 style: a ring of steps with the pulses lit and pulses/steps inside */
+static void draw_rhythm(int o, int x, int y)
+{
+    const float *p = synth_params(syn);
+    Uint32 col = osc_col(o);
+    int on = (int)p[CELL_PARAM(o, CELL_GATE, 0)], steps = (int)p[CELL_PARAM(o, CELL_GATE, 1)];
+    int pulses = (int)p[CELL_PARAM(o, CELL_GATE, 2)], rot = (int)p[CELL_PARAM(o, CELL_GATE, 3)];
+    int sel = ui.cell == o;
+    Uint32 cc = on ? col : mix_col(C_PANEL2, col, 0.3f);
+    disc(x, y, 36, sel ? mix_col(C_PANEL, col, 0.18f) : C_PANEL);
+    if (sel) { circle(x, y, 38, col); circle(x, y, 39, col); }
+    int cur = synth_cell_step(syn, o, CELL_GATE);
+    float fl = synth_cell_flash(syn, o, CELL_GATE);
+    for (int i = 0; i < steps; i++) {
+        int dx, dy;
+        polar(x, y, 29, (float)i / steps, &dx, &dy);
+        int hit = euclid_hit(steps, pulses, rot, i);
+        if (hit) disc(dx, dy, i == cur && on ? 4 + (int)(fl * 2) : 4, i == cur && on ? mix_col(cc, C_TEXT, fl) : cc);
+        else disc(dx, dy, 1, C_PANEL2);
+        if (i == cur && on) circle(dx, dy, 6, C_TEXT);
+    }
+    char t[16];
+    if (on) snprintf(t, sizeof t, "%d/%d", pulses, steps);
+    else snprintf(t, sizeof t, "open");
+    text_center(x, y - 9, t, on ? C_TEXT : C_PANEL2, 0);
 }
 
 /* five circles along the chain after the voices; each grows the more it changes the sound */
@@ -999,10 +1010,14 @@ static float stage_amount(int i)
     const float *p = synth_params(syn);
     switch (i) {
     case 0: return synth_cross_amount(syn);
-    case 1: return fabsf(p[P_TONE]) > 0.02f ? fminf(1.0f, fabsf(p[P_TONE]) + p[P_RESO] * 0.2f) : 0;
-    case 2: return p[P_FOLD];
+    case 1: { /* filter and bass / treble */
+        float f = fabsf(p[P_TONE]) > 0.02f ? fabsf(p[P_TONE]) + p[P_RESO] * 0.2f : 0;
+        float eq = (fabsf(p[P_LOW]) + fabsf(p[P_HIGH])) / 24.0f;
+        return fminf(1.0f, f > eq ? f : eq);
+    }
+    case 2: return fmaxf(p[P_FOLD], fmaxf(p[P_DRIVE], p[P_CRUSH])); /* drive, fold, crush */
     case 3: return p[P_ECHO];
-    default: return p[P_SPACE];
+    default: return fminf(1.0f, fmaxf(p[P_SPACE], fabsf(p[P_WIDTH] - 1.0f)));
     }
 }
 
@@ -1053,18 +1068,19 @@ static void draw_play(void)
     snprintf(info, sizeof info, "pitch %+d", ui.octave);
     text_center(320, 8, info, C_DIM, 0);
 
-    draw_voice(0, 104, 140, 80);
-    draw_voice(1, 536, 140, 80);
-    draw_centre(320, 140);
+    draw_voice(0, 104, 108, 68);
+    draw_voice(1, 536, 108, 68);
+    draw_centre(320, 108);
     for (int o = 0; o < 2; o++) {
         int cx = o ? 536 : 104;
-        draw_voice_dots(cx, 244, o);
-        text_center(cx, 254, osc_station_name(o), C_TEXT, 19);
+        draw_voice_dots(cx, 186, o);
+        draw_rhythm(o, cx, 236);
+        text_center(cx, 288, osc_station_name(o), C_TEXT, 19);
         char line_[256];
         osc_status_line(o, line_, sizeof line_);
-        text_center(cx, 274, line_, C_DIM, 19);
+        text_center(cx, 306, line_, C_DIM, 19);
     }
-    if (SDL_GetTicks() < ui.grab_flash) text_center(320, 254, "grabbed", C_LEAF, 0);
+    if (SDL_GetTicks() < ui.grab_flash) text_center(320, 236, "grabbed", C_LEAF, 0);
 
     int hl = -1;
     if (ui.held[B_R2]) {
@@ -1073,12 +1089,12 @@ static void draw_play(void)
         if (ui.held[B_Y] || ui.held[B_A]) hl = 4;
         if (ui.held[B_LEFT] || ui.held[B_RIGHT]) hl = 0;
     }
-    draw_stages(72, 368, 124, 20, 44, hl, 1);
+    draw_stages(72, 386, 124, 16, 34, hl, 1);
 
     const char *hint = ui.held[B_R2] ? "dpad: filter / morph   X B: fold   Y A: space" :
-                       ui.held[B_L2] ? "dpad: A steps / rate   ABXY: B steps / rate" :
-                                       "dpad: rhythm A   ABXY: rhythm B   hold L2 / R2";
-    text_center(320, 300, hint, C_DIM, 0);
+                       ui.held[B_L2] ? "^v steps  <> rate  Y X length" :
+                                       "<> voice  ^v pulses  A on  B fewer  X rotate  Y new";
+    text_center(320, 330, hint, C_DIM, 0);
     text(16, 455, "L1/R1 pitch  L2 grab  SELECT tap  START edit  MENU x2 quit", C_PANEL2, 0);
 }
 
@@ -1225,10 +1241,10 @@ static int selected_stage(void)
     if (sel < 0 || sel >= n || rows[sel] < 0) return -1;
     int id = rows[sel];
     if (id >= P_VOCODE && id <= P_CONVERSE) return 0;
-    if (id == P_TONE || id == P_RESO) return 1;
-    if (id == P_FOLD) return 2;
+    if (id == P_TONE || id == P_RESO || id == P_LOW || id == P_HIGH) return 1;
+    if (id == P_DRIVE || id == P_FOLD || id == P_CRUSH) return 2;
     if (id == P_ECHO) return 3;
-    if (id == P_SPACE || id == P_VOLUME) return 4;
+    if (id == P_SPACE || id == P_WIDTH || id == P_VOLUME) return 4;
     return -1;
 }
 
@@ -1295,22 +1311,76 @@ static void adjust_param(int id, int dir)
     ui.dirty_settings = 1;
 }
 
-/* nudge a rhythm setting from the PLAY page */
-static void rhythm_nudge(int o, int field, int dir)
+/* ---- rhythm cells on the PLAY page, played like hi5's pattern grid ---- */
+
+static void cell_say(int o, int c)
 {
-    int base = o * OSC_STRIDE, id = field + base;
-    if (!(int)synth_get_param(syn, P_A_RHYTHM + base)) synth_set_param(syn, P_A_RHYTHM + base, 1);
-    int st = (int)synth_get_param(syn, P_A_STEPS + base);
-    if (field == P_A_ROTATE) { /* rotation wraps around the pattern */
-        int r = ((int)synth_get_param(syn, id) + dir + st) % (st > 0 ? st : 1);
-        synth_set_param(syn, id, (float)r);
+    const float *p = synth_params(syn);
+    char rate[24];
+    param_format_ctx(P_A_RATE + o * OSC_STRIDE, p, rate, sizeof rate);
+    if (!(int)p[CELL_PARAM(o, c, 0)]) toast("%c rhythm off (always open)", 'A' + o);
+    else toast("%c  E(%d,%d) >%d  %s", 'A' + o, (int)p[CELL_PARAM(o, c, 2)],
+               (int)p[CELL_PARAM(o, c, 1)], (int)p[CELL_PARAM(o, c, 3)], rate);
+}
+
+/* keep pulses and rotation inside the pattern */
+static void cell_fix(int o, int c)
+{
+    int st = (int)synth_get_param(syn, CELL_PARAM(o, c, 1));
+    if (synth_get_param(syn, CELL_PARAM(o, c, 2)) > st) synth_set_param(syn, CELL_PARAM(o, c, 2), (float)st);
+    if (synth_get_param(syn, CELL_PARAM(o, c, 3)) >= st) synth_set_param(syn, CELL_PARAM(o, c, 3), (float)(st - 1));
+}
+
+static void cell_button(int b)
+{
+    int o = ui.cell / NCELL, c = ui.cell % NCELL;
+    int on = CELL_PARAM(o, c, 0), steps = CELL_PARAM(o, c, 1), pulses = CELL_PARAM(o, c, 2), rot = CELL_PARAM(o, c, 3);
+    int st = (int)synth_get_param(syn, steps);
+    if (ui.held[B_L2]) { /* steps, rate and gate length */
+        ui.l2_used = 1;
+        if (b == B_UP || b == B_DOWN) { synth_set_param(syn, steps, st + (b == B_UP ? 1 : -1)); cell_fix(o, c); }
+        if (b == B_LEFT || b == B_RIGHT) {
+            int r = P_A_RATE + o * OSC_STRIDE; /* right = faster = a shorter note value */
+            synth_set_param(syn, r, synth_get_param(syn, r) + (b == B_RIGHT ? -1 : 1));
+        }
+        if (b == B_X || b == B_Y) {
+            int l = P_A_LENGTH + o * OSC_STRIDE;
+            synth_set_param(syn, l, synth_get_param(syn, l) + (b == B_X ? 0.05f : -0.05f));
+            char v[16];
+            param_format_ctx(l, synth_params(syn), v, sizeof v);
+            toast("%c gate length %s", 'A' + o, v);
+            ui.dirty_settings = 1;
+            return;
+        }
     } else {
-        if (field == P_A_RATE) dir = -dir; /* up = faster = a shorter note value */
-        synth_set_param(syn, id, synth_get_param(syn, id) + dir);
-        st = (int)synth_get_param(syn, P_A_STEPS + base);
-        if (synth_get_param(syn, P_A_PULSES + base) > st) synth_set_param(syn, P_A_PULSES + base, (float)st);
-        if (synth_get_param(syn, P_A_ROTATE + base) >= st) synth_set_param(syn, P_A_ROTATE + base, (float)(st - 1));
+        switch (b) {
+        case B_LEFT: ui.cell = (ui.cell + NCELL * 2 - 1) % (NCELL * 2); break;
+        case B_RIGHT: ui.cell = (ui.cell + 1) % (NCELL * 2); break;
+        case B_UP: synth_set_param(syn, pulses, synth_get_param(syn, pulses) + 1); synth_set_param(syn, on, 1); break;
+        case B_DOWN: synth_set_param(syn, pulses, synth_get_param(syn, pulses) - 1); break;
+        case B_A: synth_set_param(syn, on, !(int)synth_get_param(syn, on)); break;
+        case B_B: { /* fewer pulses, wrapping back to all of them (as on hi5) */
+            int k = (int)synth_get_param(syn, pulses);
+            synth_set_param(syn, pulses, (float)(k > 1 ? k - 1 : st));
+            synth_set_param(syn, on, 1);
+            break;
+        }
+        case B_X: synth_set_param(syn, rot, (float)(((int)synth_get_param(syn, rot) + 1) % st)); break;
+        case B_Y: { /* a new random Euclidean pattern */
+            static const int lens[] = {5, 6, 7, 8, 9, 10, 11, 12, 13, 16, 16, 16};
+            int n = lens[rand() % 12], kmax = n * 2 / 3 > 1 ? n * 2 / 3 : 1;
+            synth_set_param(syn, steps, (float)n);
+            synth_set_param(syn, pulses, (float)(1 + rand() % kmax));
+            synth_set_param(syn, rot, (float)(rand() % n));
+            synth_set_param(syn, on, 1);
+            break;
+        }
+        default: return;
+        }
     }
+    o = ui.cell / NCELL;
+    c = ui.cell % NCELL;
+    cell_say(o, c);
     ui.dirty_settings = 1;
 }
 
@@ -1356,30 +1426,6 @@ static void edit_nav(int b)
     if (rows[*sel] >= 0) adjust_param(rows[*sel], b == B_LEFT ? -1 : 1);
 }
 
-/* PLAY page buttons: d-pad = rhythm A, face buttons = rhythm B (same layout: up/down, left/right) */
-static int play_rhythm_button(int b)
-{
-    int o, vert, dir;
-    switch (b) {
-    case B_UP: o = 0; vert = 1; dir = 1; break;
-    case B_DOWN: o = 0; vert = 1; dir = -1; break;
-    case B_LEFT: o = 0; vert = 0; dir = -1; break;
-    case B_RIGHT: o = 0; vert = 0; dir = 1; break;
-    case B_X: o = 1; vert = 1; dir = 1; break;
-    case B_B: o = 1; vert = 1; dir = -1; break;
-    case B_Y: o = 1; vert = 0; dir = -1; break;
-    case B_A: o = 1; vert = 0; dir = 1; break;
-    default: return 0;
-    }
-    if (ui.held[B_L2]) { /* steps and rate */
-        ui.l2_used = 1;
-        rhythm_nudge(o, vert ? P_A_STEPS : P_A_RATE, dir);
-    } else {             /* pulses and rotation */
-        rhythm_nudge(o, vert ? P_A_PULSES : P_A_ROTATE, dir);
-    }
-    return 1;
-}
-
 static void on_press(int b)
 {
     Uint32 now = SDL_GetTicks();
@@ -1410,7 +1456,7 @@ static void on_press(int b)
         if (b == B_R2) return;
         if (b == B_L1 && ui.octave > -3) { ui.octave--; set_pitch(); ui.dirty_settings = 1; return; }
         if (b == B_R1 && ui.octave < 3) { ui.octave++; set_pitch(); ui.dirty_settings = 1; return; }
-        play_rhythm_button(b);
+        cell_button(b);
         return;
     }
 
