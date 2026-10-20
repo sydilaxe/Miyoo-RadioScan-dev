@@ -33,7 +33,7 @@ enum {
     P_TONE, P_RESO, P_LOW, P_HIGH, P_DRIVE, P_FOLD, P_CRUSH,
     P_ECHO, P_SPACE, P_WIDTH, P_VOLUME,
     P_CROSS_LEVEL, P_SHAPE_LEVEL, P_ECHO_LEVEL, P_SPACE_LEVEL, /* MIX page: how loud each effect comes back */
-    P_LIMIT,                                                   /* MIX page: master limiter */
+    P_LIMIT, P_LIM_RELEASE, P_LIM_CEILING, P_AUTO_LEVEL,      /* MIX page: master limiter and leveller */
     /* the cross rhythm: its gate brings cross-modulation (morph, vocode, ring, FM) in on its pulses, and its
      * stutter ratchets the mix after cross-modulation */
     RHYTHM_FIELDS(X),
@@ -131,7 +131,7 @@ enum { TAP_STREAM, TAP_VOICES, TAP_CROSS, TAP_FILTER, TAP_FOLD, TAP_ECHO, TAP_OU
 void synth_tap_features(const Synth *s, int tap, float *rms, float *bright, float *crest);
 float synth_fold_preview(float x, float fold);         /* the folder's shape at a fold amount */
 float synth_cross_amount(const Synth *s);              /* 0..1: how much cross-modulation is on */
-#define LIMIT_RANGE_DB 18.0f                           /* the limiter's threshold reaches -18 dB */
+#define LIMIT_RANGE_DB 18.0f                           /* the limiter can push the mix up to +18 dB into its ceiling */
 /* MIX page meters: peak level (0..~1) of each voice after its drive and fader, each effect's return and the
  * output; MIX_LIMIT is the limiter's gain reduction (0 none .. 1 full) */
 enum { MIX_A, MIX_B, MIX_CROSS, MIX_SHAPE, MIX_ECHO, MIX_SPACE, MIX_LIMIT, MIX_OUT, MIX_COUNT };

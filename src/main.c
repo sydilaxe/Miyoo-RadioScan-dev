@@ -170,10 +170,13 @@ static void audio_cb(void *ud, Uint8 *stream, int len)
         stream_read(st[0], bufA, n);
         stream_read(st[1], bufB, n);
         synth_process(syn, bufA, bufB, bufO, n);
-        for (int i = 0; i < n; i++) {
-            float l = bufO[i * 2], r = bufO[i * 2 + 1];
-            out[i * 2] = (int16_t)(l * 32767.0f);
-            out[i * 2 + 1] = (int16_t)(r * 32767.0f);
+        static unsigned dith = 22222;
+        for (int i = 0; i < n * 2; i++) { /* to 16 bits with TPDF dither: quiet tails fade into noise, not grit */
+            dith = dith * 1664525u + 1013904223u;
+            float d = (float)(dith >> 16 & 0xff) - (float)(dith >> 24); /* -255 .. 255, triangular */
+            float v = bufO[i] * 32767.0f + d * (1.0f / 256.0f);
+            v = v > 32767.0f ? 32767.0f : v < -32768.0f ? -32768.0f : v;
+            out[i] = (int16_t)lrintf(v);
         }
         out += n * 2;
         frames -= n;
@@ -1523,7 +1526,8 @@ static void draw_param_page(void)
 
 /* ------------------------------------------------------------------ MIX page: a fader for every level */
 
-/* one control on the MIX page: a fader, or a knob under its strip's fader (the voices' drive) */
+/* one control on the MIX page: a fader, or a knob under its strip's fader (a voice's drive, the limiter's release,
+ * the output ceiling) */
 typedef struct { int id, meter, group, strip, knob, stage; const char *name; } MixStrip; /* stage: of the five, or -1 */
 enum { MG_A, MG_B, MG_FX, MG_MASTER, MG_COUNT };
 static const char *const mix_group_names[MG_COUNT] = {"VOICE A", "VOICE B", "EFFECTS", "MASTER"};
@@ -1532,16 +1536,18 @@ static const MixStrip mix_strips[] = { /* in Left / Right order */
     {P_B_LEVEL, MIX_B, MG_B, 1, 0, -1, "level"},           {P_B_DRIVE, -1, MG_B, 1, 1, -1, "drive"},
     {P_CROSS_LEVEL, MIX_CROSS, MG_FX, 2, 0, 0, "cross"},  {P_SHAPE_LEVEL, MIX_SHAPE, MG_FX, 3, 0, 2, "shape"},
     {P_ECHO_LEVEL, MIX_ECHO, MG_FX, 4, 0, 3, "echo"},     {P_SPACE_LEVEL, MIX_SPACE, MG_FX, 5, 0, 4, "space"},
-    {P_LIMIT, MIX_LIMIT, MG_MASTER, 6, 0, -1, "limit"},    {P_VOLUME, MIX_OUT, MG_MASTER, 7, 0, -1, "volume"},
+    {P_LIMIT, MIX_LIMIT, MG_MASTER, 6, 0, -1, "limit"},    {P_LIM_RELEASE, -1, MG_MASTER, 6, 1, -1, "rel"},
+    {P_VOLUME, MIX_OUT, MG_MASTER, 7, 0, -1, "volume"},    {P_LIM_CEILING, -1, MG_MASTER, 7, 1, -1, "ceil"},
+    {P_AUTO_LEVEL, -1, MG_MASTER, 8, 0, -1, "auto"},
 };
 #define MIX_N ((int)(sizeof mix_strips / sizeof mix_strips[0]))
-#define MIX_W 70      /* strip width; the two voice strips are wider */
-#define MIX_W_VOICE 94
+#define MIX_W 62      /* strip width; the two voice strips are wider */
+#define MIX_W_VOICE 88
 #define MIX_TOP 84
 #define MIX_BOT 236
 #define MIX_KNOB_Y 288
 
-static int mix_strip_x(int strip) { return 22 + (strip < 2 ? strip * MIX_W_VOICE : 2 * MIX_W_VOICE + (strip - 2) * MIX_W); }
+static int mix_strip_x(int strip) { return 15 + (strip < 2 ? strip * MIX_W_VOICE : 2 * MIX_W_VOICE + (strip - 2) * MIX_W); }
 static int mix_strip_w(int strip) { return strip < 2 ? MIX_W_VOICE : MIX_W; }
 
 static Uint32 mix_group_col(int g) { return g == MG_A ? C_LEAF : g == MG_B ? C_AMBER : g == MG_FX ? C_WATER : C_TEXT; }
@@ -1631,10 +1637,11 @@ static void draw_mix_page(void)
                           &mix_strips[i] == cur, p);
     char full[64], line_[160];
     param_format_ctx(cur->id, p, full, sizeof full);
-    snprintf(line_, sizeof line_, "%s %s  %s", mix_group_names[cur->group], cur->name, full);
-    for (char *c = line_; *c && c < line_ + 8; c++) *c = (char)tolower((unsigned char)*c);
-    text(24, 340, line_, C_TEXT, 26);
-    text_right(624, 340, "<> ^v  A mute  hold B fine", C_PANEL2, 0);
+    snprintf(line_, sizeof line_, "%s %s  %s", mix_group_names[cur->group], param_info[cur->id].label, full);
+    char *val = strstr(line_, full);
+    for (char *c = line_; *c && c < val; c++) *c = (char)tolower((unsigned char)*c); /* names in lower case */
+    text(24, 340, line_, C_TEXT, 36);
+    text_right(624, 340, "A mute  B fine", C_PANEL2, 0);
 }
 
 /* the parameter selected on a list page (VOICES, RHYTHM, ENGINE), or -1 */

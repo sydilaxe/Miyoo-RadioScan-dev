@@ -54,8 +54,8 @@ a wavefolder, echo and space.
   - **Drive** (warm saturation), **fold**, and **crush** (fewer bits, lower sample rate).
   - **Echo** (a dotted-eighth ping-pong), **space** (reverb) and **stereo width**.
   - **Mute** for each voice (L2 + B on PLAY, A on the MIX page); it fades rather than cuts.
-  - **Volume**, a **limiter**, and a leveller that keeps the overall loudness steady so the radio comes through
-    clearly.
+  - **Volume**, a look-ahead **limiter** (push, release, ceiling), and a leveller (**auto level**) that keeps the
+    overall loudness steady so the radio comes through clearly.
 - **Mix.** One page of faders with live meters: each voice's level and drive, how loud each effect comes back
   (cross, shape, echo, space), the limiter and the master volume.
 - **Stations.** 35 are preloaded and you can add more three ways:
@@ -157,13 +157,14 @@ ring is outlined, and every change shows its pattern briefly, like `A  E(5,8) >2
 | START | back to PLAY |
 
 **MIX page:** faders in four groups: VOICE A and VOICE B (a level fader with a drive knob under it), EFFECTS
-(cross, shape, echo and space return levels) and MASTER (limiter, volume). Left / Right step through the controls
+(cross, shape, echo and space return levels) and MASTER: **limit** (how hard the mix is pushed into the limiter,
+0 to +18 dB, with a **release** knob under it), **volume** (with the output **ceiling** under it, -1 dB by default)
+and **auto** (how much of the leveller is applied). Left / Right step through the controls
 (each voice's drive knob comes right after its fader), Up / Down set the selected one (hold B for fine steps),
 A mutes or unmutes the selected voice, and Y puts a control back to its default. Levels are shown in dB; the tick on each track is unity
 (0 dB), and faders go up to +6 dB. Each meter shows its signal after the fader; the limiter's meter shows
 how much it is turning the sound down. An effect's return level sets how loud it comes back, while its amount on
-the ENGINE page still sets its character (echo feedback, reverb length, how hard the folder works). The limiter
-goes from off to an 18 dB threshold, with the output made back up to just under full scale.
+the ENGINE page still sets its character (echo feedback, reverb length, how hard the folder works).
 
 **RADIO page:** A sends the selected station to voice A and B sends it to voice B. Y adds a URL, X deletes
 (press twice), L2 sets the station's kind (voice / music / sound), and R2 scans the directory.
@@ -262,6 +263,14 @@ The engine runs at 48 kHz. On the desktop it takes about 1–3% of one 2.1 GHz X
 the heaviest). That suggests roughly 10–25% of one Cortex-A7 core on the Mini Plus, plus a few percent for each MP3 decoder,
 leaving plenty of headroom on the dual-core chip. Denormals are flushed to zero in the audio thread so long
 reverb tails stay cheap.
+
+## Fidelity and headroom
+
+The output chain is: a DC blocker, the leveller, volume, then a look-ahead limiter that sees peaks 1.5 ms early and
+eases its gain down before they arrive, holding the output under the ceiling without bending the waveform. A soft
+knee above 0.95 only touches true overs, and the 16-bit output is dithered. Stations, loops, waves and grains are
+resampled with 4-point cubic interpolation. A 1 kHz tone comes through at about -107 to -117 dB THD+N, even with
+the limiter working, where the previous chain measured -26 to -51 dB.
 
 ## No clicks
 

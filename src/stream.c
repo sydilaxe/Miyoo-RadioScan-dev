@@ -50,7 +50,15 @@ struct Stream {
     /* declicker (audio thread only): the stream fades in and out over a few ms when it starts, changes station or
      * runs dry, holding its last sample while it fades out, instead of jumping to or from silence */
     float gain, last[2];
+    float hist[2];                    /* the frame just before ring_r, for the cubic resampler */
 };
+
+/* 4-point cubic (Hermite) interpolation at t between x0 and x1 */
+static inline float hermite(float xm1, float x0, float x1, float x2, float t)
+{
+    float c = 0.5f * (x1 - xm1), v = x0 - x1, w = c + v, a = w + v + 0.5f * (x2 - x0), b = w + a;
+    return ((a * t - b) * t + c) * t + x0;
+}
 
 #define DECLICK_SEC 0.005f
 
@@ -371,6 +379,7 @@ void stream_read(Stream *s, float *out, int frames)
         s->rs_pos = 0;
         s->playing_gate = 0;
         s->flush_req = 0;
+        s->hist[0] = s->hist[1] = 0;
     }
     unsigned avail = ring_avail(s);
     if (!s->playing_gate && avail > (unsigned)(s->src_rate * PREBUFFER_SEC)) s->playing_gate = 1;
@@ -383,17 +392,25 @@ void stream_read(Stream *s, float *out, int frames)
     const int16_t *ring = s->ring;
     unsigned r = s->ring_r;
     int i;
-    for (i = 0; i < frames; i++) {
+    for (i = 0; i < frames; i++) { /* cubic resampling from the station's rate to ours: clean highs, no grit */
         unsigned ip = (unsigned)s->rs_pos;
-        if (ip + 2 > avail) break; /* starved */
+        if (ip + 3 > avail) break; /* starved */
         float fr = (float)(s->rs_pos - ip);
-        unsigned a = (r + ip) & (RING_N - 1), b = (r + ip + 1) & (RING_N - 1);
-        out[i * 2] = (ring[a * 2] + fr * (ring[b * 2] - ring[a * 2])) * sc;
-        out[i * 2 + 1] = (ring[a * 2 + 1] + fr * (ring[b * 2 + 1] - ring[a * 2 + 1])) * sc;
+        unsigned a = (r + ip) & (RING_N - 1), b = (a + 1) & (RING_N - 1), c = (a + 2) & (RING_N - 1);
+        unsigned m = (a - 1) & (RING_N - 1);
+        for (int ch = 0; ch < 2; ch++) {
+            float xm1 = ip ? ring[m * 2 + ch] * sc : s->hist[ch];
+            out[i * 2 + ch] = hermite(xm1, ring[a * 2 + ch] * sc, ring[b * 2 + ch] * sc, ring[c * 2 + ch] * sc, fr);
+        }
         s->rs_pos += step;
     }
     unsigned adv = (unsigned)s->rs_pos;
     if (adv > avail) adv = avail;
+    if (adv) { /* keep the last consumed frame: the writer may reuse its slot */
+        unsigned h = (r + adv - 1) & (RING_N - 1);
+        s->hist[0] = ring[h * 2] * sc;
+        s->hist[1] = ring[h * 2 + 1] * sc;
+    }
     s->rs_pos -= adv;
     __atomic_store_n(&s->ring_r, r + adv, __ATOMIC_RELEASE);
     if (i < frames) {
