@@ -106,6 +106,7 @@ static struct {
     volatile int scan_busy;
     char scan_title[96];
     int dirty_settings;
+    int repeating;
     int running;
 } ui;
 
@@ -133,7 +134,12 @@ static void enable_flush_to_zero(void)
 /* Audio timing, for log.txt: a callback that comes much later than its buffer lasts means the sound dropped out
  * (a pop). Written by the audio thread, read and reported by the main thread. */
 static volatile unsigned aud_late, aud_calls;
+static volatile int aud_rt = -1;          /* real-time priority: 1 granted, 0 refused */
+static volatile double aud_first_ms;      /* when steady audio started, to count missing buffers */
+static volatile float aud_buf_ms;
+static volatile float aud_run_sum_ms;
 static volatile float aud_worst_gap_ms, aud_worst_run_ms;
+static volatile float aud_recent_gap_ms;  /* longest gap since the main loop last looked (for the event log) */
 
 static uint64_t now_us(void)
 {
@@ -153,15 +159,18 @@ static void audio_cb(void *ud, Uint8 *stream, int len)
         /* real-time priority, so a busy moment elsewhere (an SD card write, drawing) can't starve the sound;
          * the Miyoo runs apps as root, and where it isn't allowed nothing changes */
         struct sched_param sp = {.sched_priority = 50};
-        pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp);
+        aud_rt = pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp) == 0;
         ftz = 1;
     }
     static double last_start;
     double t0 = mono_ms(), buf_ms = len / 4 * 1000.0 / audio_rate;
+    aud_buf_ms = (float)buf_ms;
+    if (aud_calls == 20) aud_first_ms = t0;
     if (last_start > 0 && aud_calls > 20) { /* skip start-up */
         float gap = (float)(t0 - last_start);
         if (gap > buf_ms * 1.6) aud_late++;
         if (gap > aud_worst_gap_ms) aud_worst_gap_ms = gap;
+        if (gap > aud_recent_gap_ms) aud_recent_gap_ms = gap;
     }
     last_start = t0;
     aud_calls++;
@@ -185,21 +194,73 @@ static void audio_cb(void *ud, Uint8 *stream, int len)
     }
     float run = (float)(mono_ms() - t0);
     if (run > aud_worst_run_ms) aud_worst_run_ms = run;
+    aud_run_sum_ms += run;
 }
 
-/* every 10 s, if the audio ran late, say so in log.txt (with how late, and how long the synth itself took) */
+/* ------------------------------------------------------------------ event log
+ * What the player does (button presses with the screen they were on, settings as they settle, stations starting
+ * and failing) and every late audio buffer, each with a time stamp, so a dropout can be matched to the action that
+ * caused it. Kept in memory and written to log.txt in one go every 10 s and on quit: no SD card write per press. */
+static char ev_buf[32 * 1024];
+static int ev_len;
+static Uint32 ev_t0;
+
+static void ev_flush(void)
+{
+    if (!ev_len) return;
+    fwrite(ev_buf, 1, (size_t)ev_len, stderr);
+    fflush(stderr);
+    ev_len = 0;
+}
+
+static void ev(const char *fmt, ...)
+{
+    if (ev_len > (int)sizeof ev_buf - 256) ev_flush(); /* full: rare, only during a long burst */
+    Uint32 t = SDL_GetTicks() - ev_t0;
+    ev_len += snprintf(ev_buf + ev_len, sizeof ev_buf - ev_len, "%5u.%03u ", t / 1000, t % 1000);
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(ev_buf + ev_len, sizeof ev_buf - ev_len, fmt, ap);
+    va_end(ap);
+    if (n > 0) ev_len += n < (int)sizeof ev_buf - ev_len ? n : (int)sizeof ev_buf - ev_len - 1;
+    if (ev_len < (int)sizeof ev_buf - 1) ev_buf[ev_len++] = '\n';
+}
+
+/* Every 10 s, a line in log.txt about the last 10 s: how many buffers the sound card would have gone without
+ * ("missing": the audio thread fell behind real time, which is heard as dropouts), the longest wait between
+ * buffers, the synth's average and slowest run against the time a buffer lasts, and the screen's drawing time.
+ * Quiet unless something is late. */
+static float ui_frame_sum_ms, ui_frame_max_ms;
+static unsigned ui_frames;
+
 static void audio_report(Uint32 now)
 {
     static Uint32 last;
-    static unsigned reported;
+    static unsigned last_calls, last_late, said_rt;
+    static double last_missing;
     if (now - last < 10000) return;
     last = now;
-    if (aud_late != reported) {
-        fprintf(stderr, "audio: %u late buffers so far (worst gap %.1f ms, slowest synth run %.1f ms)\n", aud_late,
-                aud_worst_gap_ms, aud_worst_run_ms);
-        reported = aud_late;
-        aud_worst_gap_ms = aud_worst_run_ms = 0;
+    ev_flush();
+    if (!said_rt && aud_rt >= 0) {
+        fprintf(stderr, "audio: real-time priority %s, %.1f ms per buffer\n", aud_rt ? "on" : "refused", aud_buf_ms);
+        said_rt = 1;
     }
+    unsigned calls = aud_calls, late = aud_late;
+    double missing = aud_first_ms > 0 && aud_buf_ms > 0 ? (mono_ms() - aud_first_ms) / aud_buf_ms - (calls - 20) : 0;
+    if (late != last_late || missing - last_missing > 1.0) {
+        unsigned n = calls - last_calls ? calls - last_calls : 1;
+        fprintf(stderr, "audio: %u late, %.0f missing (total %.0f); longest gap %.1f ms; synth avg %.1f / max %.1f ms "
+                        "of %.1f; screen avg %.1f / max %.1f ms\n",
+                late - last_late, missing - last_missing > 0 ? missing - last_missing : 0, missing > 0 ? missing : 0,
+                aud_worst_gap_ms, aud_run_sum_ms / n, aud_worst_run_ms, aud_buf_ms,
+                ui_frames ? ui_frame_sum_ms / ui_frames : 0, ui_frame_max_ms);
+    }
+    last_calls = calls;
+    last_late = late;
+    last_missing = missing;
+    aud_worst_gap_ms = aud_worst_run_ms = aud_run_sum_ms = 0;
+    ui_frame_sum_ms = ui_frame_max_ms = 0;
+    ui_frames = 0;
 }
 
 /* ================================================================== drawing */
@@ -355,6 +416,7 @@ static void toast(const char *fmt, ...)
     vsnprintf(ui.toast, sizeof ui.toast, fmt, ap);
     va_end(ap);
     ui.toast_until = SDL_GetTicks() + 2200;
+    ev("  says: %s", ui.toast);
 }
 
 /* ================================================================== settings & stations */
@@ -1915,8 +1977,30 @@ static void edit_nav(int b)
     if (rows[*sel] >= 0) adjust_param(rows[*sel], b == B_LEFT ? -1 : 1);
 }
 
+static const char *const button_names[B_COUNT] = {"UP", "DOWN", "LEFT", "RIGHT", "A", "B", "X", "Y", "L1", "R1",
+                                                   "L2", "R2", "SELECT", "START", "MENU"};
+
+/* where a press lands, for the event log: the screen, page and selection */
+static void log_press(int b)
+{
+    char where[96], mods[32] = "";
+    if (ui.overlay == OV_KEYBOARD) snprintf(where, sizeof where, "keyboard");
+    else if (ui.overlay == OV_SCANMENU || ui.overlay == OV_SCANRESULTS) snprintf(where, sizeof where, "scan");
+    else if (ui.screen == SCR_PLAY) snprintf(where, sizeof where, "PLAY, %s ring", seq_name(ui.cell));
+    else if (ui.tab == TAB_MIX) snprintf(where, sizeof where, "MIX, %s", param_info[mix_strips[ui.sel[TAB_MIX]].id].key);
+    else if (ui.tab == TAB_RADIO) snprintf(where, sizeof where, "RADIO, station %d", ui.radio_sel + 1);
+    else {
+        int id = selected_param();
+        snprintf(where, sizeof where, "%s, %s", tab_names[ui.tab], id >= 0 ? param_info[id].key : "-");
+    }
+    if (ui.held[B_L2] && b != B_L2) strcat(mods, " +L2");
+    if (ui.held[B_R2] && b != B_R2) strcat(mods, " +R2");
+    ev("press %s%s  (%s)", button_names[b], mods, where);
+}
+
 static void on_press(int b)
 {
+    if (!ui.repeating) log_press(b);
     Uint32 now = SDL_GetTicks();
     if (ui.overlay == OV_KEYBOARD) { kb_input(b); return; }
     if (ui.overlay == OV_SCANMENU) { scan_menu_input(b); return; }
@@ -2029,15 +2113,68 @@ static void held_keys_update(Uint32 now)
         Uint32 interval = ui.screen == SCR_PLAY ? 140 : held_for > 1500 ? 30 : 70;
         if (held_for > 320 && now - ui.last_repeat[b] >= interval) {
             ui.last_repeat[b] = now;
+            ui.repeating = 1; /* a held key repeating: not logged as a new press */
             on_press(b);
+            ui.repeating = 0;
         }
     }
 }
 
 /* ================================================================== periodic logic */
 
+/* settings as they settle (a held fader is one line, not hundreds), station state changes, late audio */
+static void log_watch(Uint32 now)
+{
+    static float last[P_COUNT], from[P_COUNT];
+    static Uint32 changed_at[P_COUNT];
+    static unsigned char pending[P_COUNT];
+    static int started, last_state[2] = {-1, -1};
+    static unsigned last_late;
+    const float *p = synth_params(syn);
+    if (!started) { memcpy(last, p, sizeof last); started = 1; }
+    for (int i = 0; i < P_COUNT; i++) {
+        if (p[i] != last[i]) {
+            if (!pending[i]) { from[i] = last[i]; pending[i] = 1; changed_at[i] = 0; }
+            if (!changed_at[i]) changed_at[i] = now;
+            last[i] = p[i];
+            changed_at[i] = now;
+        } else if (pending[i] && now - changed_at[i] > 400) {
+            float tmp[P_COUNT];
+            char a[48], b[48];
+            memcpy(tmp, p, sizeof tmp);
+            tmp[i] = from[i];
+            param_format_ctx(i, tmp, a, sizeof a);
+            param_format_ctx(i, p, b, sizeof b);
+            ev("  set %s: %s -> %s", param_info[i].key, a, b);
+            pending[i] = 0;
+        }
+    }
+    for (int o = 0; o < 2; o++) {
+        int stt = stream_state(st[o]);
+        if (stt != last_state[o]) {
+            static const char *const names[] = {"idle", "connecting", "buffering", "playing", "error"};
+            char msg[160];
+            stream_status(st[o], msg, sizeof msg);
+            ev("  voice %c stream %s: %s", 'A' + o, names[stt], msg);
+            last_state[o] = stt;
+        }
+    }
+    static int last_octave = 99;
+    if (ui.octave != last_octave) {
+        if (last_octave != 99) ev("  set octave: %+d -> %+d", last_octave, ui.octave);
+        last_octave = ui.octave;
+    }
+    unsigned late = aud_late;
+    if (late != last_late) {
+        ev("AUDIO LATE x%u (longest gap %.0f ms)", late - last_late, aud_recent_gap_ms);
+        last_late = late;
+    }
+    aud_recent_gap_ms = 0;
+}
+
 static void logic_update(Uint32 now)
 {
+    log_watch(now);
     for (int o = 0; o < 2; o++)
         if (ui.pending_station[o] >= -1 && now >= ui.pending_at[o]) tune_now(o, ui.pending_station[o]);
     if (ui.scan_busy && scan_done) {
@@ -2284,7 +2421,7 @@ int main(int argc, char **argv)
     pitch_px = screen->pitch / 4;
 
     audio_rate = getenv("RS_RATE") ? atoi(getenv("RS_RATE")) : 48000;
-    int buffer = getenv("RS_BUFFER") ? atoi(getenv("RS_BUFFER")) : 1024;
+    int buffer = getenv("RS_BUFFER") ? atoi(getenv("RS_BUFFER")) : 2048; /* ~43 ms; the MI_AO driver keeps two */
     SDL_AudioSpec want, have;
     memset(&want, 0, sizeof want);
     want.format = AUDIO_S16SYS;
@@ -2347,6 +2484,8 @@ int main(int argc, char **argv)
     signal(SIGINT, on_signal);
     fprintf(stderr, "radioscan: audio %s at %d Hz, %d frames/buffer\n", audio_ok ? "open" : "FAILED", audio_rate, buffer);
     ui.running = 1;
+    ev_t0 = SDL_GetTicks();
+    ev("start (event times are seconds since this line)");
     while (ui.running && !got_signal) {
         SDL_Event e;
         Uint32 now = SDL_GetTicks();
@@ -2369,12 +2508,19 @@ int main(int argc, char **argv)
         held_keys_update(now);
         logic_update(now);
         sync_poll(now_us());
+        double f0 = mono_ms();
         render();
         present();
+        float fms = (float)(mono_ms() - f0);
+        ui_frame_sum_ms += fms;
+        if (fms > ui_frame_max_ms) ui_frame_max_ms = fms;
+        ui_frames++;
         Uint32 spent = SDL_GetTicks() - now; /* ~30 frames per second, whatever the drawing cost */
         if (spent < 33) SDL_Delay(33 - spent);
     }
 
+    ev("quit");
+    ev_flush();
     sync_close();
     save_settings();
     SDL_PauseAudio(1);

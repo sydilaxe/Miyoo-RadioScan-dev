@@ -12,7 +12,7 @@ export LD_LIBRARY_PATH="/mnt/SDCARD/.tmp_update/lib/parasyte:/lib:/config/lib:/m
 export RADIOSCAN_DIR="$(pwd)"
 
 # Optional overrides (remove the # to use one):
-# export RS_BUFFER=2048     # if audio crackles or drops out
+# export RS_BUFFER=1024     # quicker response, if the sound never drops out (the default is 2048)
 # export RS_RATE=32000      # lighter on the CPU (48000 is the hardware's native rate)
 # export RS_ROTATE180=0     # if the picture is upside down (the default turns it for the Mini Plus panel)
 ./radioscan > log.txt 2>&1

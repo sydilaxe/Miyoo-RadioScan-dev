@@ -259,6 +259,7 @@ typedef struct { float a1, a2, a3; } SvfCoef;
 typedef struct {
     double pos, rate;
     int len, age;
+    float wpos, wstep;    /* place in the fade window, and its step per sample (no division per sample) */
     float gl, gr;
 } Grain;
 
@@ -845,6 +846,8 @@ static void osc_tick(Synth *s, int idx, float ratio, float freq)
                 }
                 gr->len = glen;
                 gr->age = 0;
+                gr->wpos = 0;
+                gr->wstep = (float)WIN_N / glen;
                 float pan = (rnd01(s) - 0.5f) * 0.6f;
                 gr->gl = 0.75f - pan * 0.5f;
                 gr->gr = 0.75f + pan * 0.5f;
@@ -855,7 +858,8 @@ static void osc_tick(Synth *s, int idx, float ratio, float freq)
         for (int g = 0; g < MAX_GRAINS; g++) {
             Grain *gr = &o->grains[g];
             if (!gr->len) continue;
-            float w = s->win[gr->age * WIN_N / gr->len];
+            float w = s->win[(int)gr->wpos];
+            gr->wpos += gr->wstep;
             double ip = floor(gr->pos);
             float fr = (float)(gr->pos - ip);
             unsigned i0 = (unsigned)(long long)ip & (CAP_N - 1), im = (i0 - 1) & (CAP_N - 1);
