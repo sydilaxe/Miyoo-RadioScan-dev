@@ -11,10 +11,10 @@ unset LD_PRELOAD
 export LD_LIBRARY_PATH="/mnt/SDCARD/.tmp_update/lib/parasyte:/lib:/config/lib:/mnt/SDCARD/miyoo/lib:/mnt/SDCARD/.tmp_update/lib:$LD_LIBRARY_PATH"
 export RADIOSCAN_DIR="$(pwd)"
 
-# Optional overrides:
-#   RS_BUFFER=2048     if audio crackles
-#   RS_RATE=32000      lighter on the CPU (48000 is the hardware's native rate)
-#   RS_ROTATE180=0     if the picture is upside down (the default turns it for the Mini Plus panel)
+# Optional overrides (remove the # to use one):
+# export RS_BUFFER=2048     # if audio crackles or drops out
+# export RS_RATE=32000      # lighter on the CPU (48000 is the hardware's native rate)
+# export RS_ROTATE180=0     # if the picture is upside down (the default turns it for the Mini Plus panel)
 ./radioscan > log.txt 2>&1
 
 rm -f /tmp/stay_awake

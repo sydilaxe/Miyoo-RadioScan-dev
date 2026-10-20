@@ -12,11 +12,17 @@
 #ifndef DSP_H
 #define DSP_H
 
-#define VOICE_FIELDS(X)                                                                                       \
-    P_##X##_STATION, P_##X##_MODE, P_##X##_TUNE, P_##X##_SIZE, P_##X##_TEXTURE, P_##X##_FOCUS, P_##X##_LEVEL, \
-    P_##X##_PAN, P_##X##_OSC, P_##X##_OSC_MIX,                                                                             \
+/* a rhythm: a Euclidean gate and a stutter at the same rate; voices A and B and the cross stage each have one */
+#define RHYTHM_FIELDS(X)                                                                                      \
     P_##X##_GATE_ON, P_##X##_GATE_STEPS, P_##X##_GATE_PULSES, P_##X##_GATE_ROT,                                 \
-    P_##X##_RATE, P_##X##_LENGTH, P_##X##_ATTACK, P_##X##_RELEASE, P_##X##_CHANCE
+    P_##X##_RATE, P_##X##_LENGTH, P_##X##_ATTACK, P_##X##_RELEASE, P_##X##_CHANCE,                              \
+    P_##X##_STUT_ON, P_##X##_STUT_STEPS, P_##X##_STUT_PULSES, P_##X##_STUT_ROT,                                 \
+    P_##X##_STUT_RATCHET, P_##X##_STUT_MODE, P_##X##_STUT_CHANCE
+
+#define VOICE_FIELDS(X)                                                                                       \
+    P_##X##_STATION, P_##X##_MODE, P_##X##_TUNE, P_##X##_SIZE, P_##X##_TEXTURE, P_##X##_DIR, P_##X##_FOCUS,     \
+    P_##X##_LEVEL, P_##X##_MUTE, P_##X##_PAN, P_##X##_DRIVE, P_##X##_OSC, P_##X##_OSC_MIX,                                    \
+    RHYTHM_FIELDS(X)
 
 enum {
     VOICE_FIELDS(A), /* VOICE B id = VOICE A id + OSC_STRIDE */
@@ -26,20 +32,35 @@ enum {
     P_ROOT,
     P_TONE, P_RESO, P_LOW, P_HIGH, P_DRIVE, P_FOLD, P_CRUSH,
     P_ECHO, P_SPACE, P_WIDTH, P_VOLUME,
+    P_CROSS_LEVEL, P_SHAPE_LEVEL, P_ECHO_LEVEL, P_SPACE_LEVEL, /* MIX page: how loud each effect comes back */
+    P_LIMIT, P_LIM_RELEASE, P_LIM_CEILING, P_AUTO_LEVEL,      /* MIX page: master limiter and leveller */
+    /* the cross rhythm: its gate brings cross-modulation (morph, vocode, ring, FM) in on its pulses, and its
+     * stutter ratchets the mix after cross-modulation */
+    RHYTHM_FIELDS(X),
     P_COUNT
 };
 
 #define OSC_STRIDE (P_B_STATION - P_A_STATION)
-/* each voice has one Euclidean rhythm (its gate) that opens and closes it */
-enum { CELL_GATE, NCELL };
-#define CELL_STRIDE 4
-#define CELL_PARAM(osc, cell, field) (P_A_GATE_ON + (osc) * OSC_STRIDE + (cell) * CELL_STRIDE + (field)) /* field 0 on, 1 steps, 2 pulses, 3 rotate */
+/* The rhythms on screen: each one's gate (A, B, cross) and each one's stutter. A rhythm belongs to v = 0 (A), 1 (B)
+ * or SEQ_X (cross), and its settings are one RHYTHM_FIELDS block. */
+enum { SEQ_A, SEQ_B, SEQ_X, SEQ_SA, SEQ_SB, SEQ_SX, SEQ_COUNT };
+#define SEQ_VOICE(seq) ((seq) >= SEQ_SA ? (seq) - SEQ_SA : (seq))
+#define RHYTHM_BASE(v) ((v) == SEQ_X ? P_X_GATE_ON : P_A_GATE_ON + (v) * OSC_STRIDE)
+#define RHYTHM_P(v, F) (RHYTHM_BASE(v) + (P_A_##F - P_A_GATE_ON)) /* e.g. RHYTHM_P(v, RATE), RHYTHM_P(v, STUT_MODE) */
+/* on (field 0), steps (1), pulses (2) or rotate (3) of a gate or stutter pattern */
+#define SEQ_PARAM(seq, field) (RHYTHM_BASE(SEQ_VOICE(seq)) + ((seq) >= SEQ_SA ? P_A_STUT_ON - P_A_GATE_ON : 0) + (field))
+#define SEQ_SHAPE(seq, F) RHYTHM_P(SEQ_VOICE(seq), F) /* RATE, LENGTH, ATTACK, RELEASE, CHANCE */
+/* stutter modes: REPEAT the step's first slice; REVERSE every other ratchet; RANDOM count and direction;
+ * PITCH each ratchet up (or down) the scale; DROPOUT some ratchets to silence; SCATTER fragments of a latched
+ * sample at random places, directions and octaves (a grab re-latches) */
+enum { STUT_REPEAT, STUT_REVERSE, STUT_RANDOM, STUT_PITCH, STUT_DROPOUT, STUT_SCATTER };
 
 enum { OSC_LIVE, OSC_LOOP, OSC_WAVE, OSC_GRAIN };
 enum { FOCUS_ALL, FOCUS_VOICE, FOCUS_MUSIC };
+enum { DIR_FORWARD, DIR_REVERSE, DIR_BOTH }; /* BOTH: loops ping-pong, grains go either way */
 enum { CAT_ANY, CAT_VOICE, CAT_MUSIC, CAT_SOUND };
 enum { VS_SILENT, VS_MUSIC, VS_VOICE };
-enum { PAGE_VOICES, PAGE_RHYTHM, PAGE_ENGINE, PAGE_COUNT };
+enum { PAGE_VOICES, PAGE_RHYTHM, PAGE_ENGINE, PAGE_MIX, PAGE_COUNT };
 enum { VOC_OFF, VOC_A_TO_B, VOC_B_TO_A };
 enum { FM_B_TO_A, FM_A_TO_B };
 
@@ -93,8 +114,9 @@ void synth_process(Synth *s, const float *inA, const float *inB, float *out, int
 
 /* display */
 int synth_current_note(const Synth *s);
-int synth_cell_step(const Synth *s, int osc, int cell);    /* current step of a rhythm cell */
-float synth_cell_flash(const Synth *s, int osc, int cell);  /* 1 on a hit, fading */
+int synth_seq_step(const Synth *s, int seq);           /* current step of SEQ_A, SEQ_B or SEQ_X */
+float synth_seq_flash(const Synth *s, int seq);
+float synth_cross_gate(const Synth *s);                /* how open the cross rhythm is now, 0..1 */
 float synth_gate_value(const Synth *s, int osc);       /* how open the voice is now, 0..1 */
 float synth_speechness(const Synth *s, int osc);       /* 0 music .. 1 speech */
 int synth_voice_state(const Synth *s, int osc);        /* VS_* */
@@ -109,6 +131,11 @@ enum { TAP_STREAM, TAP_VOICES, TAP_CROSS, TAP_FILTER, TAP_FOLD, TAP_ECHO, TAP_OU
 void synth_tap_features(const Synth *s, int tap, float *rms, float *bright, float *crest);
 float synth_fold_preview(float x, float fold);         /* the folder's shape at a fold amount */
 float synth_cross_amount(const Synth *s);              /* 0..1: how much cross-modulation is on */
+#define LIMIT_RANGE_DB 18.0f                           /* the limiter can push the mix up to +18 dB into its ceiling */
+/* MIX page meters: peak level (0..~1) of each voice after its drive and fader, each effect's return and the
+ * output; MIX_LIMIT is the limiter's gain reduction (0 none .. 1 full) */
+enum { MIX_A, MIX_B, MIX_CROSS, MIX_SHAPE, MIX_ECHO, MIX_SPACE, MIX_LIMIT, MIX_OUT, MIX_COUNT };
+float synth_mix_meter(const Synth *s, int ch);
 
 float param_clamp(int id, float v);
 float param_adjust(int id, float v, int dir, int fine);

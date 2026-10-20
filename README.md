@@ -16,14 +16,30 @@ a wavefolder, echo and space.
   - **WAVE:** a few milliseconds of the stream as a pitched waveform that keeps re-scanning the broadcast.
   - **GRAIN:** a cloud of grains from the last moments of the stream.
 
-  Each voice has its own **level** and **pan**. **Focus** can make a voice listen only to speech or only to
+  LOOP, WAVE and GRAIN voices can play **forward**, in **reverse**, or **both** (a loop ping-pongs; grains go
+  either way at random). Loops can be up to 2.7 seconds long.
+
+  Each voice has its own **level**, **drive** and **pan**. **Focus** can make a voice listen only to speech or only to
   music; either voice can play any station. An optional **oscillator** (sine,
   triangle, saw or square) can be mixed into each voice for a cleaner tone or a carrier for cross-modulation.
   It's off by default; the radio comes first.
 - **Two rhythms.** Each voice has a Euclidean rhythm that decides when it sounds: steps, pulses, rotate, rate
   and chance, and a gate shape (attack, length, release) from soft swells to sharp chops. With the rhythm off,
-  the voice plays continuously. Both rhythms are played directly on the PLAY page, as on hi5. Tap tempo
-  (SELECT) and Wi-Fi sync drive both.
+  the voice plays continuously. A third, **cross rhythm** brings the cross-modulation (morph, vocode, ring,
+  FM) in on its pulses, with the same controls and gate shape; off, the cross stage stays on as set. All three
+  rhythms are played directly on the PLAY page, as on hi5.
+- **Stutter and glitch.** Each voice has a **stutter rhythm**, and so does the mix after cross-modulation and
+  morph. On the steps it marks, the sound is chopped into 2 to 8 ratchets, in one of six modes:
+  - **REPEAT:** the step's first slice, again and again.
+  - **REVERSE:** every other ratchet backwards.
+  - **RANDOM:** a random count, sometimes reversed.
+  - **PITCH:** each ratchet higher (now and then lower), an octave over the step.
+  - **DROPOUT:** some ratchets drop to silence.
+  - **SCATTER:** latches a sample and plays fragments of it from anywhere, either way, at an octave down, as
+    is, or up. Grabbing (tap L2) latches a new sample.
+
+  A voice's stutter runs at its rate and opens the voice for the step; the cross stutter runs at the cross
+  rhythm's rate. All work on any engine and turn on and off like the other rhythms. Tap tempo (SELECT) and Wi-Fi sync drive them all.
 - **Cross-modulation.**
   - **Vocode:** A speaks through B, or B through A, with 5, 8, 13, 21 or 34 bands.
   - **FM:** one voice bends the other's pitch.
@@ -37,7 +53,11 @@ a wavefolder, echo and space.
   - **Bass** and **treble** shelves.
   - **Drive** (warm saturation), **fold**, and **crush** (fewer bits, lower sample rate).
   - **Echo** (a dotted-eighth ping-pong), **space** (reverb) and **stereo width**.
-  - **Volume**, and a leveller that keeps the overall loudness steady so the radio comes through clearly.
+  - **Mute** for each voice (L2 + B on PLAY, A on the MIX page); it fades rather than cuts.
+  - **Volume**, a look-ahead **limiter** (push, release, ceiling), and a leveller (**auto level**) that keeps the
+    overall loudness steady so the radio comes through clearly.
+- **Mix.** One page of faders with live meters: each voice's level and drive, how loud each effect comes back
+  (cross, shape, echo, space), the limiter and the master volume.
 - **Stations.** 35 are preloaded and you can add more three ways:
   1. Edit `stations.txt` on the SD card (`Name|URL|voice|music|sound`).
   2. Type a URL on the on-screen keyboard (RADIO page, **Y**).
@@ -50,31 +70,40 @@ a wavefolder, echo and space.
 
 The PLAY page is for performing: the two rhythms and the sound, live.
 
-- **Voice circles (left A, right B).** A faint inner form shows the raw broadcast; a bright outer form shows
-  the voice as it sounds. Five dots underneath show how speech-like the station is.
-- **Rhythm rings.** Under each voice: its steps around a ring, with coloured pulses, a white ring on the current
-  step, and pulses/steps in the middle.
-- **Spectrum backdrop.** A soft frequency spectrum behind the circles. Each band's height is the output level,
-  and its colour shows which voice dominates it: leaf green for A, amber for B.
+- **Voice circles (left A, right B).** Each voice's waveform is wrapped around its circle like a polar
+  oscilloscope, swinging out and in with the signal: faint and small inside for the raw broadcast, bright and wide
+  outside for the voice as it sounds. Each is scaled to its own recent peak, so a quiet station still swings wide,
+  and the outer one opens and closes with the voice's rhythm. Five dots underneath show how speech-like the
+  station is.
+- **Stutter rings.** Under each voice and under the centre, a stutter rhythm drawn geometrically: the pulses
+  joined into a polygon that flashes when a step ratchets, with its mode and ratchet count beside it.
+- **Rhythm rings.** Each voice wears its rhythm around its rim: coloured pulses, a white ring on the current step,
+  and pulses/steps and the rate under the engine name. The cross rhythm circles the centre the same way.
+- **Spectrum backdrop.** A soft frequency spectrum of the overall sound behind the circles. Its colour follows
+  frequency, from indigo in the bass through rose in the mids to sky blue in the highs, hues kept apart from the
+  voices' green and amber.
 - **Converse.** The voice holding the floor gets a bright ring.
-- **Centre.** The final sound. The dot travelling over the top shows the morph position, from A on the left to
-  B on the right.
+- **Centre.** The final sound, with the cross rhythm around it. The dot travelling over the top shows the morph
+  position, from A on the left to B on the right. Underneath, each active cross effect is spelled out (like
+  *A talks thru B*, *morph 40% to B*, *B bends A pitch*, *A talks, B waits*), with a bar showing its set amount
+  and, brighter, how much of it the cross rhythm and the MIX return let through right now.
 - **Five circles along the bottom:** *cross → filter → fold → echo → space*. Each grows the more it changes
   the sound.
-- **Abstract forms.** Every form is driven by the sound, not drawn as a waveform:
+- **Abstract forms.** The centre and the five stage circles are driven by the sound rather than drawn as a waveform:
   - Loudness swells the core.
   - Brightness adds petals (3, 5, 8, 13, 21) and spin.
   - Spiky sound sharpens the petals.
   - Attacks send out ripples.
   - In the fold circle the petals bend through the folder itself.
 
-The EDIT pages (**RADIO, VOICES, RHYTHM, ENGINE**) hold every setting. A strip at the bottom shows the voices
+The EDIT pages (**RADIO, VOICES, RHYTHM, ENGINE, MIX**) hold every setting. A strip at the bottom shows the voices
 and the five stages, with the stage you're editing ringed.
 
 | | |
 |---|---|
 | ![engine](docs/engine.png) | ![rhythm](docs/rhythm.png) |
 | ![radio](docs/radio.png) | ![sound gestures](docs/playmod.png) |
+| ![mix](docs/mix.png) | |
 
 ## Install
 
@@ -89,21 +118,24 @@ With the card mounted on a computer, `make install SD=/path/to/card` copies the 
 
 **PLAY** (performance)
 
-The two rhythm rings under the voices are played like hi5's pattern cells. The selected ring is outlined, and
-every change shows its pattern briefly, like `A  E(5,8) >2  1/8`.
+The six rhythm rings (voice A, A's stutter, cross, the cross stutter under it, B's stutter, voice B) are played
+like hi5's pattern cells. The selected
+ring is outlined, and every change shows its pattern briefly, like `A  E(5,8) >2  1/8`.
 
 | Button | Action |
 |---|---|
-| D-pad left / right | select voice A or B's rhythm |
+| D-pad left / right | select the rhythm: voice A, A stutter, cross, cross stutter, B stutter, voice B |
 | D-pad up / down | more / fewer pulses |
-| A | rhythm on / off (off = the voice plays continuously) |
+| A | rhythm on / off (off = the voice plays continuously; a stutter off never ratchets) |
 | B | fewer pulses, wrapping back to all |
 | X | rotate |
 | Y | a new random pattern |
 | hold L2 + up / down | steps |
-| hold L2 + left / right | rate (right = faster) |
-| hold L2 + Y / X | gate length shorter / longer |
-| tap L2 | grab fresh slices from both streams |
+| hold L2 + left / right | rate: jump between 1/4, 1/8, 1/16 and 1/32 (right = faster; every rate is on the RHYTHM page) |
+| hold L2 + Y / X | gate length shorter / longer (a stutter: fewer / more ratchets) |
+| hold L2 + B | mute / unmute the selected voice (on a stutter ring: its mode) |
+| hold L2 + A | start / stop the rhythms (stopped, voices with a rhythm on are quiet; start begins on the downbeat) |
+| tap L2 | grab a fresh slice for the selected voice (both voices when the cross rhythm is selected) |
 | hold R2 + D-pad | up/down: filter brighter / darker; left/right: morph toward A / B |
 | hold R2 + X / B | fold more / less |
 | hold R2 + Y / A | space less / more |
@@ -113,16 +145,26 @@ every change shows its pattern briefly, like `A  E(5,8) >2  1/8`.
 | START | go to EDIT |
 | MENU twice | quit |
 
-**EDIT** (RADIO, VOICES, RHYTHM, ENGINE)
+**EDIT** (RADIO, VOICES, RHYTHM, ENGINE, MIX)
 
 | Button | Action |
 |---|---|
 | L1 / R1 | previous / next page |
 | Up / Down | choose a row; Left / Right change it (hold B for fine steps) |
-| X / L2 | grab |
+| X / L2 | grab a fresh slice for the voice of the selected setting (both when it isn't a voice setting) |
 | Y | roll the dice on the selected section |
 | SELECT | tap tempo |
 | START | back to PLAY |
+
+**MIX page:** faders in four groups: VOICE A and VOICE B (a level fader with a drive knob under it), EFFECTS
+(cross, shape, echo and space return levels) and MASTER: **limit** (how hard the mix is pushed into the limiter,
+0 to +18 dB, with a **release** knob under it), **volume** (with the output **ceiling** under it, -1 dB by default)
+and **auto** (how much of the leveller is applied). Left / Right step through the controls
+(each voice's drive knob comes right after its fader), Up / Down set the selected one (hold B for fine steps),
+A mutes or unmutes the selected voice, and Y puts a control back to its default. Levels are shown in dB; the tick on each track is unity
+(0 dB), and faders go up to +6 dB. Each meter shows its signal after the fader; the limiter's meter shows
+how much it is turning the sound down. An effect's return level sets how loud it comes back, while its amount on
+the ENGINE page still sets its character (echo feedback, reverb length, how hard the folder works).
 
 **RADIO page:** A sends the selected station to voice A and B sends it to voice B. Y adds a URL, X deletes
 (press twice), L2 sets the station's kind (voice / music / sound), and R2 scans the directory.
@@ -221,6 +263,25 @@ The engine runs at 48 kHz. On the desktop it takes about 1–3% of one 2.1 GHz X
 the heaviest). That suggests roughly 10–25% of one Cortex-A7 core on the Mini Plus, plus a few percent for each MP3 decoder,
 leaving plenty of headroom on the dual-core chip. Denormals are flushed to zero in the audio thread so long
 reverb tails stay cheap.
+
+## Fidelity and headroom
+
+The output chain is: a DC blocker, the leveller, volume, then a look-ahead limiter that sees peaks 1.5 ms early and
+eases its gain down before they arrive, holding the output under the ceiling without bending the waveform. A soft
+knee above 0.95 only touches true overs, and the 16-bit output is dithered. Stations, loops, waves and grains are
+resampled with 4-point cubic interpolation. A 1 kHz tone comes through at about -107 to -117 dB THD+N, even with
+the limiter working, where the previous chain measured -26 to -51 dB.
+
+## No clicks
+
+Every change that could jump is smoothed over a few milliseconds: rhythm gates close before their step ends (so a
+LOOP restarts from silence), stutter ratchets and the return from a stutter fade, scatter crossfades in from the
+live sound, levels and mutes glide, and a station fades in and out when it starts, changes or runs dry.
+
+Settings are saved a few seconds after you stop changing them, in the background, so writing to the SD card never
+interrupts the sound. If you still hear dropouts, `log.txt` notes any late audio buffers (how late, and how long the
+synth took), which tells a slow card or a busy CPU apart from a sound problem; raising `RS_BUFFER` to 2048 in
+`launch.sh` gives more headroom.
 
 ## Limitations
 

@@ -11,12 +11,14 @@
 #include <limits.h>
 #include <math.h>
 #include <pthread.h>
+#include <sched.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <ctype.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -71,8 +73,8 @@ static char app_dir[PATH_MAX], stations_path[PATH_MAX + 16], settings_path[PATH_
 enum { SCR_PLAY, SCR_EDIT };
 enum { OV_NONE, OV_KEYBOARD, OV_SCANMENU, OV_SCANRESULTS };
 enum { KB_ADD_URL, KB_ADD_NAME, KB_SEARCH };
-enum { TAB_RADIO, TAB_VOICES, TAB_RHYTHM, TAB_ENGINE, TAB_COUNT };
-static const char *const tab_names[TAB_COUNT] = {"RADIO", "VOICES", "RHYTHM", "ENGINE"};
+enum { TAB_RADIO, TAB_VOICES, TAB_RHYTHM, TAB_ENGINE, TAB_MIX, TAB_COUNT };
+static const char *const tab_names[TAB_COUNT] = {"RADIO", "VOICES", "RHYTHM", "ENGINE", "MIX"};
 
 #define ROW_HEADER (-3)
 
@@ -86,10 +88,11 @@ static struct {
     int held[B_COUNT];
     Uint32 held_since[B_COUNT], last_repeat[B_COUNT];
     int l2_used;              /* L2 acted as a modifier while held (otherwise a tap = grab) */
-    int cell;                 /* PLAY: selected rhythm cell, 0..5 (A gate, stut, grab, B gate, stut, grab) */
+    int cell;                 /* PLAY: selected rhythm, SEQ_A, SEQ_B or SEQ_X (the cross rhythm in the middle) */
     char toast[128];
     Uint32 toast_until;
     Uint32 grab_flash, menu_armed;
+    int grab_osc;             /* voice of the last grab: 0, 1 or -1 for both */
     Uint32 taps[8];
     int ntaps;
     int pending_station[2];
@@ -127,11 +130,39 @@ static void enable_flush_to_zero(void)
 #endif
 }
 
+/* Audio timing, for log.txt: a callback that comes much later than its buffer lasts means the sound dropped out
+ * (a pop). Written by the audio thread, read and reported by the main thread. */
+static volatile unsigned aud_late, aud_calls;
+static volatile float aud_worst_gap_ms, aud_worst_run_ms;
+
+static double mono_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1000.0 + ts.tv_nsec / 1e6;
+}
+
 static void audio_cb(void *ud, Uint8 *stream, int len)
 {
     (void)ud;
     static __thread int ftz;
-    if (!ftz) { enable_flush_to_zero(); ftz = 1; }
+    if (!ftz) {
+        enable_flush_to_zero();
+        /* real-time priority, so a busy moment elsewhere (an SD card write, drawing) can't starve the sound;
+         * the Miyoo runs apps as root, and where it isn't allowed nothing changes */
+        struct sched_param sp = {.sched_priority = 50};
+        pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp);
+        ftz = 1;
+    }
+    static double last_start;
+    double t0 = mono_ms(), buf_ms = len / 4 * 1000.0 / audio_rate;
+    if (last_start > 0 && aud_calls > 20) { /* skip start-up */
+        float gap = (float)(t0 - last_start);
+        if (gap > buf_ms * 1.6) aud_late++;
+        if (gap > aud_worst_gap_ms) aud_worst_gap_ms = gap;
+    }
+    last_start = t0;
+    aud_calls++;
     int16_t *out = (int16_t *)stream;
     int frames = len / 4;
     while (frames > 0) {
@@ -139,13 +170,33 @@ static void audio_cb(void *ud, Uint8 *stream, int len)
         stream_read(st[0], bufA, n);
         stream_read(st[1], bufB, n);
         synth_process(syn, bufA, bufB, bufO, n);
-        for (int i = 0; i < n; i++) {
-            float l = bufO[i * 2], r = bufO[i * 2 + 1];
-            out[i * 2] = (int16_t)(l * 32767.0f);
-            out[i * 2 + 1] = (int16_t)(r * 32767.0f);
+        static unsigned dith = 22222;
+        for (int i = 0; i < n * 2; i++) { /* to 16 bits with TPDF dither: quiet tails fade into noise, not grit */
+            dith = dith * 1664525u + 1013904223u;
+            float d = (float)(dith >> 16 & 0xff) - (float)(dith >> 24); /* -255 .. 255, triangular */
+            float v = bufO[i] * 32767.0f + d * (1.0f / 256.0f);
+            v = v > 32767.0f ? 32767.0f : v < -32768.0f ? -32768.0f : v;
+            out[i] = (int16_t)lrintf(v);
         }
         out += n * 2;
         frames -= n;
+    }
+    float run = (float)(mono_ms() - t0);
+    if (run > aud_worst_run_ms) aud_worst_run_ms = run;
+}
+
+/* every 10 s, if the audio ran late, say so in log.txt (with how late, and how long the synth itself took) */
+static void audio_report(Uint32 now)
+{
+    static Uint32 last;
+    static unsigned reported;
+    if (now - last < 10000) return;
+    last = now;
+    if (aud_late != reported) {
+        fprintf(stderr, "audio: %u late buffers so far (worst gap %.1f ms, slowest synth run %.1f ms)\n", aud_late,
+                aud_worst_gap_ms, aud_worst_run_ms);
+        reported = aud_late;
+        aud_worst_gap_ms = aud_worst_run_ms = 0;
     }
 }
 
@@ -310,22 +361,49 @@ static void toast(const char *fmt, ...)
 #define SETTINGS_VERSION 3
 static int settings_were_reset;
 
-static void save_settings(void)
+/* The settings text is built on the main thread and written by a short-lived background thread, so a slow SD card
+ * never holds up the screen, the buttons or (through them) the audio. */
+static char save_buf[64 * 1024];
+static volatile int save_busy;
+
+static void *save_thread(void *arg)
 {
+    (void)arg;
     char tmp[PATH_MAX + 32];
     snprintf(tmp, sizeof tmp, "%s.tmp", settings_path);
     FILE *f = fopen(tmp, "w");
-    if (!f) return;
-    fprintf(f, "version=%d\n", SETTINGS_VERSION);
-    for (int i = 0; i < P_COUNT; i++) fprintf(f, "%s=%g\n", param_info[i].key, synth_get_param(syn, i));
-    for (int o = 0; o < 2; o++) {
-        int idx = (int)synth_get_param(syn, P_A_STATION + o * OSC_STRIDE);
-        if (idx >= 0 && idx < stations.count) fprintf(f, "%c_url=%s\n", 'a' + o, stations.items[idx].url);
+    if (f) {
+        fputs(save_buf, f);
+        fclose(f);
+        rename(tmp, settings_path);
     }
-    fprintf(f, "octave=%d\n", ui.octave);
-    fclose(f);
-    rename(tmp, settings_path);
+    save_busy = 0;
+    return NULL;
+}
+
+/* background = 0 writes now (on quit) */
+static void save_settings_ex(int background)
+{
+    if (save_busy) return; /* the previous save is still writing: try again later */
+    int n = 0, cap = (int)sizeof save_buf;
+    n += snprintf(save_buf + n, cap - n, "version=%d\n", SETTINGS_VERSION);
+    for (int i = 0; i < P_COUNT && n < cap; i++) n += snprintf(save_buf + n, cap - n, "%s=%g\n", param_info[i].key, synth_get_param(syn, i));
+    for (int o = 0; o < 2 && n < cap; o++) {
+        int idx = (int)synth_get_param(syn, P_A_STATION + o * OSC_STRIDE);
+        if (idx >= 0 && idx < stations.count) n += snprintf(save_buf + n, cap - n, "%c_url=%s\n", 'a' + o, stations.items[idx].url);
+    }
+    if (n < cap) snprintf(save_buf + n, cap - n, "octave=%d\n", ui.octave);
     ui.dirty_settings = 0;
+    save_busy = 1;
+    pthread_t t;
+    if (background && pthread_create(&t, NULL, save_thread, NULL) == 0) pthread_detach(t);
+    else save_thread(NULL);
+}
+
+static void save_settings(void) /* now, on this thread (on quit): after any save still writing */
+{
+    while (save_busy) SDL_Delay(5);
+    save_settings_ex(0);
 }
 
 
@@ -724,6 +802,7 @@ static void draw_scan_results(void)
 /* ================================================================== shared widgets */
 
 static Uint32 osc_col(int o) { return o ? C_AMBER : C_LEAF; }
+static int voice_muted(int o) { return (int)synth_get_param(syn, P_A_MUTE + o * OSC_STRIDE); }
 
 static void osc_status_line(int o, char *buf, int n)
 {
@@ -767,10 +846,15 @@ static void draw_toast(void)
 static void draw_beat(int x, int y)
 {
     float ph = synth_beat_phase(syn);
-    disc(x, y + 8, 6, ph < 0.15f ? C_TEXT : C_PANEL2);
     char b[24];
-    snprintf(b, sizeof b, "%.0f bpm", synth_get_param(syn, P_BPM));
-    text(x + 14, y, b, C_DIM, 0);
+    if (synth_running(syn)) {
+        disc(x, y + 8, 6, ph < 0.15f ? C_TEXT : C_PANEL2);
+        snprintf(b, sizeof b, "%.0f bpm", synth_get_param(syn, P_BPM));
+    } else { /* stopped: a square, as on a transport */
+        fill(x - 5, y + 3, 11, 11, C_RUST);
+        snprintf(b, sizeof b, "stopped");
+    }
+    text(x + 14, y, b, synth_running(syn) ? C_DIM : C_RUST, 0);
     if (sc_mode() != SYNC_OFF) { /* Wi-Fi sync: ring = searching, filled = linked */
         const SyncStatus *ss = sync_status();
         const char *t = ss->leading ? "lead" : ss->following ? "follow" : "sync";
@@ -932,33 +1016,204 @@ static void tap_bands(int tap, float *bands)
     }
 }
 
-/* Soft spectrum behind the circles, mirrored around the middle of the screen. Height follows the output;
- * colour shows which voice is strongest in each band: leaf for A, amber for B. */
+/* Soft spectrum of the overall sound behind the circles, mirrored around the middle of the screen. Its colour runs
+ * with frequency, from indigo bass through rose mids to sky-blue highs: hues away from the voices' green and amber,
+ * so it reads as the whole mix rather than either voice. */
+static Uint32 spectrum_col(float t) /* t: 0 lowest band .. 1 highest */
+{
+    static const Uint32 stops[3] = {RGB(118, 92, 214), RGB(206, 102, 168), RGB(118, 192, 232)};
+    return t < 0.5f ? mix_col(stops[0], stops[1], t * 2) : mix_col(stops[1], stops[2], t * 2 - 1);
+}
+
 static void draw_spectrum(void)
 {
-    static float height[SPEC_BANDS], mixab[SPEC_BANDS];
-    float out[SPEC_BANDS], a[SPEC_BANDS], b[SPEC_BANDS];
+    static float height[SPEC_BANDS];
+    float out[SPEC_BANDS];
     tap_bands(TAP_OUT, out);
-    tap_bands(TAP_A, a);
-    tap_bands(TAP_B, b);
     float w = (float)SCREEN_W / SPEC_BANDS;
     for (int i = 0; i < SPEC_BANDS; i++) {
         float db = 10.0f * log10f(out[i] + 1e-12f);       /* about -110 .. +30 */
         float h = (db + 60.0f) / 80.0f;
         h = h < 0 ? 0 : h > 1 ? 1 : h;
         height[i] = h > height[i] ? h : height[i] * 0.9f; /* rises fast, falls gently */
-        float t = b[i] / (a[i] + b[i] + 1e-12f);
-        mixab[i] += (t - mixab[i]) * 0.3f;
         int hp = (int)(height[i] * 130);
         if (hp < 1) continue;
-        Uint32 col = mix_col(C_BG, mix_col(C_LEAF, C_AMBER, mixab[i]), 0.08f + 0.12f * height[i]); /* a quiet backdrop */
+        Uint32 col = mix_col(C_BG, spectrum_col((float)i / (SPEC_BANDS - 1)), 0.10f + 0.18f * height[i]); /* a quiet backdrop */
         int x = (int)(i * w);
         fill(x + 1, 240 - hp, (int)w - 2, hp * 2, col);
     }
 }
 
-/* a voice: faint bloom of the raw broadcast inside, bright bloom of the voice as it sounds outside,
- * and its rhythm as dots around the rim */
+/* centred text with a dark outline 2 px wide, so it reads over a busy waveform. The outline is each glyph grown
+ * by 2 px in every direction, drawn in one pass, then the text goes on top. */
+static void text_halo(int cx, int y, const char *s, Uint32 col)
+{
+    Uint32 m = map_col(C_PANEL);
+    int x = cx - (int)strlen(s) * FONT_W / 2;
+    for (const char *c = s; *c; c++, x += FONT_W) {
+        unsigned char ch = (unsigned char)*c;
+        if (ch < FONT_FIRST || ch > FONT_LAST) ch = '?';
+        const uint16_t *g = font_bits[ch - FONT_FIRST];
+        for (int r = -2; r < FONT_H + 2; r++) {
+            uint32_t rows = 0; /* the glyph rows within 2 of this one, shifted so column -2 is bit 19 */
+            for (int rr = r - 2; rr <= r + 2; rr++)
+                if (rr >= 0 && rr < FONT_H) rows |= (uint32_t)g[rr] << 2;
+            uint32_t d = rows | rows << 1 | rows << 2 | rows >> 1 | rows >> 2;
+            for (int k = -2; k < FONT_W + 2; k++)
+                if (d & (1u << (17 - k))) pset(x + k, y + r, m);
+        }
+    }
+    text_center(cx, y, s, col, 0);
+}
+
+/* PLAY layout: two voices with the cross stage between them, each wearing its rhythm as a ring of steps */
+#define VOICE_Y 118
+#define VOICE_R 80
+#define VOICE_AX 108
+#define VOICE_BX 532
+#define CENTRE_R 68
+#define STUT_Y 256          /* the stutter rings, under the voices */
+#define STUT_R 30
+
+static const char *seq_name(int q)
+{
+    static const char *const names[SEQ_COUNT] = {"A", "B", "cross", "A stutter", "B stutter", "cross stutter"};
+    return names[q];
+}
+static Uint32 seq_col(int q) { return SEQ_VOICE(q) == SEQ_X ? C_TEXT : osc_col(SEQ_VOICE(q)); }
+
+/* a rhythm's steps around a circle: pulses lit (with a dark edge so they read over a waveform), a white ring on the
+ * current step. big: the gate rings around the voices; otherwise the small stutter rings. */
+static void draw_steps(int q, int cx, int cy, float r, int big)
+{
+    const float *p = synth_params(syn);
+    int on = (int)p[SEQ_PARAM(q, 0)], steps = (int)p[SEQ_PARAM(q, 1)];
+    int pulses = (int)p[SEQ_PARAM(q, 2)], rot = (int)p[SEQ_PARAM(q, 3)];
+    Uint32 cc = on ? seq_col(q) : mix_col(C_PANEL2, seq_col(q), 0.3f);
+    int cur = synth_seq_step(syn, q);
+    float fl = synth_seq_flash(syn, q);
+    for (int i = 0; i < steps; i++) {
+        int dx, dy;
+        polar(cx, cy, r, (float)i / steps, &dx, &dy);
+        int now = i == cur && on;
+        Uint32 dot = now ? mix_col(cc, C_TEXT, fl) : cc;
+        if (!euclid_hit(steps, pulses, rot, i)) {
+            if (big) disc(dx, dy, 4, C_BG);
+            disc(dx, dy, big ? 2 : 1, mix_col(C_PANEL2, C_DIM, big ? 0.5f : 0.4f));
+        } else if (big) {
+            int rr = now ? 6 + (int)(fl * 3) : 6;
+            disc(dx, dy, rr + 2, C_BG);
+            disc(dx, dy, rr, dot);
+        } else {
+            disc(dx, dy, 5, C_BG);
+            disc(dx, dy, now ? 4 + (int)(fl * 2) : 3, dot);
+        }
+        if (now && big) { circle(dx, dy, 9, C_TEXT); circle(dx, dy, 10, C_TEXT); }
+        else if (now) circle(dx, dy, 6, C_TEXT);
+    }
+}
+
+/* a stutter rhythm, drawn geometrically: its pulses joined into a polygon, which lights up when a step ratchets */
+static void draw_stut_ring(int o, int cx, int cy, int r) /* o: voice 0, 1 or SEQ_X */
+{
+    const float *p = synth_params(syn);
+    int q = SEQ_SA + o;
+    Uint32 col = seq_col(q);
+    int on = (int)p[SEQ_PARAM(q, 0)], steps = (int)p[SEQ_PARAM(q, 1)];
+    int pulses = (int)p[SEQ_PARAM(q, 2)], rot = (int)p[SEQ_PARAM(q, 3)];
+    float fl = on ? synth_seq_flash(syn, q) : 0;
+    disc(cx, cy, r + 6, C_PANEL);
+    if (ui.cell == q) { circle(cx, cy, r + 10, col); circle(cx, cy, r + 11, col); }
+    int px_[16], py_[16], k = 0;
+    for (int i = 0; i < steps; i++)
+        if (euclid_hit(steps, pulses, rot, i)) polar(cx, cy, r, (float)i / steps, &px_[k], &py_[k]), k++;
+    Uint32 lc = mix_col(on ? mix_col(C_PANEL2, col, 0.55f) : C_PANEL2, C_TEXT, fl);
+    if (k == 1) line(cx, cy, px_[0], py_[0], lc);
+    for (int i = 0; k > 1 && i < k; i++) {
+        line(px_[i], py_[i], px_[(i + 1) % k], py_[(i + 1) % k], lc);
+        if (fl > 0.05f) line(px_[i] + 1, py_[i], px_[(i + 1) % k] + 1, py_[(i + 1) % k], lc); /* a flash thickens it */
+    }
+    draw_steps(q, cx, cy, r, 0);
+    char t[8], mode[16] = "stutter";
+    if (on) {
+        snprintf(t, sizeof t, "x%d", (int)p[RHYTHM_P(o, STUT_RATCHET)]);
+        int id = RHYTHM_P(o, STUT_MODE); /* its mode's name, in lower case */
+        snprintf(mode, sizeof mode, "%s", param_info[id].choices[(int)p[id]]);
+        for (char *c = mode; *c; c++) *c = (char)tolower((unsigned char)*c);
+    } else {
+        snprintf(t, sizeof t, "off");
+    }
+    int lx = o == 1 ? cx - r - 44 : cx + r + 44; /* beside the ring, so the shape stays clear */
+    text_halo(lx, cy - 18, mode, on ? C_DIM : C_PANEL2);
+    text_halo(lx, cy, t, on ? (fl > 0.3f ? C_TEXT : C_DIM) : C_PANEL2);
+}
+
+/* a gate rhythm, hi5 style, as a ring of steps (outlined when selected) */
+static void draw_seq_ring(int q, int cx, int cy, float r)
+{
+    if (ui.cell == q) { circle(cx, cy, (int)r + 9, seq_col(q)); circle(cx, cy, (int)r + 10, seq_col(q)); }
+    draw_steps(q, cx, cy, r, 1);
+}
+
+static void seq_label(int q, char *t, int n)
+{
+    const float *p = synth_params(syn);
+    if ((int)p[SEQ_PARAM(q, 0)]) snprintf(t, n, "%d/%d", (int)p[SEQ_PARAM(q, 2)], (int)p[SEQ_PARAM(q, 1)]);
+    else snprintf(t, n, "open");
+}
+
+static void seq_rate_label(int q, char *t, int n) { param_format_ctx(SEQ_SHAPE(q, RATE), synth_params(syn), t, n); }
+
+/* A waveform wrapped around a circle, like a polar oscilloscope: the line swings out and in with the signal.
+ * It is triggered on a rising zero crossing so it holds still on a steady tone, and scaled to its own recent
+ * peak so even a quiet station swings wide. *env keeps that peak between frames. */
+static void draw_polar_wave(int cx, int cy, float base, float swing, int tap, Uint32 col, int thick, float *env)
+{
+    enum { WN = 2048, SPAN = 1024, PTS = 180 };
+    static float buf[WN];
+    synth_tap_read(syn, tap, buf, WN);
+    int start = WN - SPAN;
+    for (int i = WN - SPAN - 1; i > WN - SPAN - 900; i--) /* the latest rising zero crossing with room after it */
+        if (buf[i - 1] < 0 && buf[i] >= 0) { start = i; break; }
+    float pk = 0;
+    for (int i = 0; i < SPAN; i++) pk = fmaxf(pk, fabsf(buf[start + i]));
+    *env = pk > *env ? pk : *env * 0.93f;
+    float g = 1.0f / fmaxf(*env, 0.01f);
+    if (pk < 0.0005f) g = 0; /* silence: a still circle */
+    float v[PTS];
+    for (int k = 0; k < PTS; k++) { /* average each slice so the line is smooth, not aliased */
+        int a = start + k * SPAN / PTS, b = start + (k + 1) * SPAN / PTS;
+        float sum = 0, mx = 0;
+        for (int i = a; i < b; i++) { sum += buf[i]; if (fabsf(buf[i]) > fabsf(mx)) mx = buf[i]; }
+        v[k] = 0.5f * (sum / (b - a)) + 0.5f * mx; /* keep some of the peaks: it should look lively */
+        v[k] *= g;
+        v[k] = v[k] > 1 ? 1 : v[k] < -1 ? -1 : v[k];
+    }
+    for (int k = 0; k < PTS / 10; k++) { /* close the loop smoothly */
+        float t = (float)k / (PTS / 10);
+        v[PTS - 1 - k] = v[PTS - 1 - k] * t + v[0] * (1 - t);
+    }
+    static float sn[PTS + 1], cs[PTS + 1]; /* the same angles every frame: what polar() would compute */
+    if (cs[0] == 0)
+        for (int k = 0; k <= PTS; k++) {
+            float frac = (float)k / PTS;
+            sn[k] = sinf(frac * 2 * (float)M_PI);
+            cs[k] = cosf(frac * 2 * (float)M_PI);
+        }
+    for (int th = 0; th < thick; th++) {
+        int x0 = 0, y0 = 0;
+        for (int k = 0; k <= PTS; k++) {
+            float r = base + th + swing * v[k % PTS];
+            int x = cx + (int)lroundf(sn[k] * r), y = cy - (int)lroundf(cs[k] * r);
+            if (k) line(x0, y0, x, y, col);
+            x0 = x;
+            y0 = y;
+        }
+    }
+}
+
+/* a voice: the raw broadcast's waveform faint inside, the voice as it sounds bright outside, and its rhythm
+ * around the rim */
 static void draw_voice(int o, int cx, int cy, int R)
 {
     Uint32 col = osc_col(o);
@@ -967,38 +1222,25 @@ static void draw_voice(int o, int cx, int cy, int R)
     disc(cx, cy, R, C_PANEL);
     circle(cx, cy, R, mix_col(C_PANEL2, col, gate * synth_osc_level(syn, o) * 2.0f));
     if (synth_floor(syn) == o) { circle(cx, cy, R + 1, col); circle(cx, cy, R + 2, col); } /* converse: has the floor */
-    draw_bloom(cx, cy, R * 0.26f, R * 0.48f, R * 0.5f, o ? TAP_RAW_B : TAP_RAW_A, mix_col(C_PANEL, col, 0.45f), 0);
-    draw_bloom(cx, cy, R * 0.52f, R * 0.92f, R + 10, o ? TAP_B : TAP_A, col, 0);
+    static float env_raw[2], env_out[2];
+    draw_polar_wave(cx, cy, R * 0.34f, R * 0.14f, o ? TAP_RAW_B : TAP_RAW_A, mix_col(C_PANEL, col, 0.5f), 1, &env_raw[o]);
+    float open = gate > 0.02f ? 0.35f + 0.65f * gate : 0.0f; /* the swing opens and closes with the rhythm */
+    draw_polar_wave(cx, cy, R * 0.58f, R * 0.26f * open, o ? TAP_B : TAP_A, col, 2, &env_out[o]);
+    draw_seq_ring(o, cx, cy, R - 7);
     static const char *const mn[] = {"live", "loop", "wave", "grain"};
-    text_center(cx, cy - 9, mn[(int)p[P_A_MODE + o * OSC_STRIDE]], C_TEXT, 0);
-    disc(cx, cy + 16, 4, state_col(o));
-}
-
-/* a voice's rhythm, hi5 style: a ring of steps with the pulses lit and pulses/steps inside */
-static void draw_rhythm(int o, int x, int y)
-{
-    const float *p = synth_params(syn);
-    Uint32 col = osc_col(o);
-    int on = (int)p[CELL_PARAM(o, CELL_GATE, 0)], steps = (int)p[CELL_PARAM(o, CELL_GATE, 1)];
-    int pulses = (int)p[CELL_PARAM(o, CELL_GATE, 2)], rot = (int)p[CELL_PARAM(o, CELL_GATE, 3)];
-    int sel = ui.cell == o;
-    Uint32 cc = on ? col : mix_col(C_PANEL2, col, 0.3f);
-    disc(x, y, 36, sel ? mix_col(C_PANEL, col, 0.18f) : C_PANEL);
-    if (sel) { circle(x, y, 38, col); circle(x, y, 39, col); }
-    int cur = synth_cell_step(syn, o, CELL_GATE);
-    float fl = synth_cell_flash(syn, o, CELL_GATE);
-    for (int i = 0; i < steps; i++) {
-        int dx, dy;
-        polar(x, y, 29, (float)i / steps, &dx, &dy);
-        int hit = euclid_hit(steps, pulses, rot, i);
-        if (hit) disc(dx, dy, i == cur && on ? 4 + (int)(fl * 2) : 4, i == cur && on ? mix_col(cc, C_TEXT, fl) : cc);
-        else disc(dx, dy, 1, C_PANEL2);
-        if (i == cur && on) circle(dx, dy, 6, C_TEXT);
-    }
     char t[16];
-    if (on) snprintf(t, sizeof t, "%d/%d", pulses, steps);
-    else snprintf(t, sizeof t, "open");
-    text_center(x, y - 9, t, on ? C_TEXT : C_PANEL2, 0);
+    seq_label(o, t, sizeof t);
+    int mode = (int)p[P_A_MODE + o * OSC_STRIDE], dir = (int)p[P_A_DIR + o * OSC_STRIDE];
+    char mt[16];
+    snprintf(mt, sizeof mt, "%s%s", mn[mode], mode == OSC_LIVE || dir == DIR_FORWARD ? "" : dir == DIR_REVERSE ? " rev" : " <>");
+    text_halo(cx, cy - 20, mt, C_TEXT);
+    if (voice_muted(o)) text_halo(cx, cy - 44, "muted", C_RUST);
+    disc(cx, cy + 4, 4, state_col(o));
+    text_halo(cx, cy + 12, t, (int)p[SEQ_PARAM(o, 0)] ? C_DIM : C_PANEL2);
+    if ((int)p[SEQ_PARAM(o, 0)]) {
+        seq_rate_label(o, t, sizeof t);
+        text_halo(cx, cy + 30, t, C_DIM);
+    }
 }
 
 /* five circles along the chain after the voices; each grows the more it changes the sound */
@@ -1037,25 +1279,67 @@ static void draw_stages(int x0, int y, int spacing, float rmin, float rmax, int 
     }
 }
 
-/* centre: the final sound, with the morph position travelling over the top from A (left) to B (right) */
+/* one line under the centre: a bar for the effect's set amount, brighter for how much of it is let through
+ * now (open), and what it does */
+static void centre_fx(int cx, int *y, int *n, float amt, float open, Uint32 col, const char *what)
+{
+    if (++*n > 3) return;
+    int bx = cx - 92;
+    float now = amt * open;
+    fill(bx, *y + 6, 36, 6, C_PANEL);
+    fill(bx, *y + 6, (int)(36 * fminf(amt, 1.0f)), 6, mix_col(C_PANEL, col, 0.35f));
+    fill(bx, *y + 6, (int)(36 * fminf(now, 1.0f)), 6, col);
+    text(bx + 44, *y, what, now > 0.02f ? C_TEXT : C_DIM, 15);
+    *y += 17;
+}
+
+/* centre: the final sound with the cross rhythm around it, the morph position travelling over the top from
+ * A (left) to B (right), and underneath, in words, what the cross stage is doing to the sound right now */
 static void draw_centre(int cx, int cy)
 {
     const float *p = synth_params(syn);
-    disc(cx, cy, 64, C_PANEL);
-    draw_bloom(cx, cy, 10, 60, 100, TAP_OUT, C_TEXT, 0);
+    int on = (int)p[P_X_GATE_ON];
+    float open = synth_cross_gate(syn) * fminf(p[P_CROSS_LEVEL], 1.0f); /* the cross rhythm and the MIX return */
+    float amount = synth_cross_amount(syn);
+    disc(cx, cy, CENTRE_R, C_PANEL);
+    circle(cx, cy, CENTRE_R, mix_col(C_PANEL2, C_TEXT, amount * open));
+    draw_bloom(cx, cy, 12, CENTRE_R - 16, CENTRE_R + 20, TAP_OUT, C_TEXT, 0);
+    draw_seq_ring(SEQ_X, cx, cy, CENTRE_R - 7);
+    text_center(cx, cy - 20, "cross", amount > 0.01f ? C_TEXT : C_DIM, 0);
+    char t[16];
+    seq_label(SEQ_X, t, sizeof t);
+    text_halo(cx, cy + 12, t, on ? C_DIM : C_PANEL2);
+    if (on) { seq_rate_label(SEQ_X, t, sizeof t); text_halo(cx, cy + 30, t, C_DIM); }
+
     float m = p[P_MORPH];
-    arc(cx, cy, 74, 2, 0.75f, 1.25f, C_PANEL2);
+    int ar = CENTRE_R + 20;
+    arc(cx, cy, ar, 2, 0.75f, 1.25f, C_PANEL2);
     int mx, my;
-    polar(cx, cy, 74, 0.75f + 0.5f * m, &mx, &my);
+    polar(cx, cy, ar, 0.75f + 0.5f * m, &mx, &my);
     disc(mx, my, m > 0.01f ? 6 : 4, m > 0.01f ? mix_col(C_LEAF, C_AMBER, m) : C_PANEL2);
-    char b[48] = "";
+
+    /* one line per active effect (up to three): a bar for how much it is set and how much is applied now, and
+     * what it does */
+    int y = cy + CENTRE_R + 8, n = 0;
     int voc = (int)p[P_VOCODE];
-    if (voc) snprintf(b, sizeof b, "vocode %s", voc == VOC_A_TO_B ? "A>B" : "B>A");
-    else if (p[P_FM] > 0.01f) snprintf(b, sizeof b, "fm %s", (int)p[P_FM_DIR] == FM_B_TO_A ? "B>A" : "A>B");
-    else if (p[P_RING] > 0.01f) snprintf(b, sizeof b, "ring");
-    else if (m > 0.01f) snprintf(b, sizeof b, "morph");
-    else if (p[P_CONVERSE] > 0.01f) snprintf(b, sizeof b, "converse");
-    if (b[0]) text_center(cx, cy + 72, b, C_DIM, 0);
+    if (voc && p[P_VOCODE_AMT] > 0.01f)
+        centre_fx(cx, &y, &n, p[P_VOCODE_AMT], open, voc == VOC_A_TO_B ? C_LEAF : C_AMBER,
+                  voc == VOC_A_TO_B ? "A talks thru B" : "B talks thru A");
+    if (m > 0.01f) {
+        char what[24];
+        snprintf(what, sizeof what, "morph %.0f%% to B", m * 100);
+        centre_fx(cx, &y, &n, m, open, mix_col(C_LEAF, C_AMBER, m), what);
+    }
+    if (p[P_FM] > 0.01f) {
+        int ab = (int)p[P_FM_DIR] == FM_A_TO_B;
+        centre_fx(cx, &y, &n, p[P_FM], synth_cross_gate(syn), ab ? C_LEAF : C_AMBER, ab ? "A bends B pitch" : "B bends A pitch");
+    }
+    if (p[P_RING] > 0.01f) centre_fx(cx, &y, &n, p[P_RING], open, C_TEXT, "ring A x B");
+    if (p[P_CONVERSE] > 0.01f) {
+        int f = synth_floor(syn);
+        centre_fx(cx, &y, &n, p[P_CONVERSE], 1, f == 1 ? C_AMBER : C_LEAF, f == 1 ? "B talks, A waits" : "A talks, B waits");
+    }
+    if (n == 0) text_center(cx, y, "no cross-mod", C_PANEL2, 0);
 }
 
 static void draw_play(void)
@@ -1066,21 +1350,24 @@ static void draw_play(void)
     draw_beat(520, 8);
     char info[48];
     snprintf(info, sizeof info, "pitch %+d", ui.octave);
-    text_center(320, 8, info, C_DIM, 0);
+    text(126, 8, info, C_DIM, 0);
 
-    draw_voice(0, 104, 108, 68);
-    draw_voice(1, 536, 108, 68);
-    draw_centre(320, 108);
+    draw_voice(0, VOICE_AX, VOICE_Y, VOICE_R);
+    draw_voice(1, VOICE_BX, VOICE_Y, VOICE_R);
+    draw_centre(320, VOICE_Y);
     for (int o = 0; o < 2; o++) {
-        int cx = o ? 536 : 104;
-        draw_voice_dots(cx, 186, o);
-        draw_rhythm(o, cx, 236);
-        text_center(cx, 288, osc_station_name(o), C_TEXT, 19);
+        int cx = o ? VOICE_BX : VOICE_AX;
+        draw_voice_dots(cx, VOICE_Y + VOICE_R + 12, o);
+        draw_stut_ring(o, cx, STUT_Y, STUT_R);
+        if (o == 0) draw_stut_ring(SEQ_X, 320, STUT_Y + 26, 24); /* under the centre: the mix after cross / morph */
+        text_center(cx, STUT_Y + STUT_R + 14, osc_station_name(o), C_TEXT, 19);
         char line_[256];
         osc_status_line(o, line_, sizeof line_);
-        text_center(cx, 306, line_, C_DIM, 19);
+        text_center(cx, STUT_Y + STUT_R + 31, line_, C_DIM, 19);
     }
-    if (SDL_GetTicks() < ui.grab_flash) text_center(320, 236, "grabbed", C_LEAF, 0);
+    if (SDL_GetTicks() < ui.grab_flash)
+        for (int o = 0; o < 2; o++)
+            if (ui.grab_osc < 0 || ui.grab_osc == o) text_center(o ? VOICE_BX : VOICE_AX, VOICE_Y + 34, "grabbed", C_TEXT, 0);
 
     int hl = -1;
     if (ui.held[B_R2]) {
@@ -1089,18 +1376,20 @@ static void draw_play(void)
         if (ui.held[B_Y] || ui.held[B_A]) hl = 4;
         if (ui.held[B_LEFT] || ui.held[B_RIGHT]) hl = 0;
     }
-    draw_stages(72, 386, 124, 16, 34, hl, 1);
+    draw_stages(72, 394, 124, 14, 28, hl, 1);
 
+    int stut = ui.cell >= SEQ_SA;
     const char *hint = ui.held[B_R2] ? "dpad: filter / morph   X B: fold   Y A: space" :
-                       ui.held[B_L2] ? "^v steps  <> rate  Y X length" :
-                                       "<> voice  ^v pulses  A on  B fewer  X rotate  Y new";
-    text_center(320, 330, hint, C_DIM, 0);
+                       ui.held[B_L2] ? (stut ? "^v steps  <> rate  Y X ratchets  B mode  A start/stop" :
+                                               "^v steps  <> rate  Y X length  B mute  A start/stop") :
+                                       "<> rhythm  ^v pulses  A on/off  B fewer  X rotate  Y new";
+    text_center(320, 344, hint, C_DIM, 0);
     text(16, 455, "L1/R1 pitch  L2 grab  SELECT tap  START edit  MENU x2 quit", C_PANEL2, 0);
 }
 
 /* ================================================================== EDIT screen */
 
-static int tab_page(int tab) { return tab - 1; } /* VOICES, RHYTHM, ENGINE -> PAGE_* */
+static int tab_page(int tab) { return tab - 1; } /* VOICES, RHYTHM, ENGINE, MIX -> PAGE_* */
 
 /* rows for the current tab; ids >= 0 are params, ROW_HEADER rows carry a section name */
 static int build_rows(int tab, int *rows, const char **hdrs)
@@ -1121,7 +1410,7 @@ static int build_rows(int tab, int *rows, const char **hdrs)
 static void draw_tabs(void)
 {
     for (int i = 0; i < TAB_COUNT; i++) {
-        int x = 30 + i * 155;
+        int x = 30 + i * 124;
         int sel = ui.tab == i;
         if (sel) disc(x, 16, 7, C_LEAF);
         else circle(x, 16, 7, C_DIM);
@@ -1161,6 +1450,14 @@ static void draw_radio_page(void)
     }
 }
 
+/* where a value sits between its parameter's ends, 0..1 (log parameters on a log scale) */
+static float param_frac(int id, float v)
+{
+    const ParamInfo *pi = &param_info[id];
+    float f = pi->log ? logf(v / pi->min) / logf(pi->max / pi->min) : (v - pi->min) / (pi->max - pi->min);
+    return f < 0 ? 0 : f > 1 ? 1 : f;
+}
+
 static void draw_param_row(int id, int x, int y, int knob_x, int val_x, int val_chars, int selected)
 {
     const ParamInfo *pi = &param_info[id];
@@ -1178,7 +1475,7 @@ static void draw_param_row(int id, int x, int y, int knob_x, int val_x, int val_
     }
     param_format_ctx(id, p, val, sizeof val);
     Uint32 kc = selected ? C_LEAF : C_DIM;
-    if (id >= P_A_STATION && id <= P_B_CHANCE) kc = selected ? osc_col(id >= P_B_STATION) : C_DIM;
+    if (id >= P_A_STATION && id <= P_B_STUT_CHANCE) kc = selected ? osc_col(id >= P_B_STATION) : C_DIM;
     if (pi->choices) {
         int n = (int)pi->max + 1, v = (int)p[id];
         circle(knob_x, ky, 8, C_PANEL2); /* choices: a dot orbiting to its position */
@@ -1186,10 +1483,7 @@ static void draw_param_row(int id, int x, int y, int knob_x, int val_x, int val_
         polar(knob_x, ky, 8, (float)v / n, &dx, &dy);
         disc(dx, dy, 3, kc);
     } else {
-        float f;
-        if (pi->log) f = logf(p[id] / pi->min) / logf(pi->max / pi->min);
-        else f = (p[id] - pi->min) / (pi->max - pi->min);
-        knob(knob_x, ky, 9, f, pi->min < 0 && !pi->log, kc);
+        knob(knob_x, ky, 9, param_frac(id, p[id]), pi->min < 0 && !pi->log, kc);
     }
     text(val_x, y, val, selected ? C_TEXT : C_DIM, val_chars);
 }
@@ -1230,16 +1524,142 @@ static void draw_param_page(void)
     }
 }
 
+/* ------------------------------------------------------------------ MIX page: a fader for every level */
+
+/* one control on the MIX page: a fader, or a knob under its strip's fader (a voice's drive, the limiter's release,
+ * the output ceiling) */
+typedef struct { int id, meter, group, strip, knob, stage; const char *name; } MixStrip; /* stage: of the five, or -1 */
+enum { MG_A, MG_B, MG_FX, MG_MASTER, MG_COUNT };
+static const char *const mix_group_names[MG_COUNT] = {"VOICE A", "VOICE B", "EFFECTS", "MASTER"};
+static const MixStrip mix_strips[] = { /* in Left / Right order */
+    {P_A_LEVEL, MIX_A, MG_A, 0, 0, -1, "level"},           {P_A_DRIVE, -1, MG_A, 0, 1, -1, "drive"},
+    {P_B_LEVEL, MIX_B, MG_B, 1, 0, -1, "level"},           {P_B_DRIVE, -1, MG_B, 1, 1, -1, "drive"},
+    {P_CROSS_LEVEL, MIX_CROSS, MG_FX, 2, 0, 0, "cross"},  {P_SHAPE_LEVEL, MIX_SHAPE, MG_FX, 3, 0, 2, "shape"},
+    {P_ECHO_LEVEL, MIX_ECHO, MG_FX, 4, 0, 3, "echo"},     {P_SPACE_LEVEL, MIX_SPACE, MG_FX, 5, 0, 4, "space"},
+    {P_LIMIT, MIX_LIMIT, MG_MASTER, 6, 0, -1, "limit"},    {P_LIM_RELEASE, -1, MG_MASTER, 6, 1, -1, "rel"},
+    {P_VOLUME, MIX_OUT, MG_MASTER, 7, 0, -1, "volume"},    {P_LIM_CEILING, -1, MG_MASTER, 7, 1, -1, "ceil"},
+    {P_AUTO_LEVEL, -1, MG_MASTER, 8, 0, -1, "auto"},
+};
+#define MIX_N ((int)(sizeof mix_strips / sizeof mix_strips[0]))
+#define MIX_W 62      /* strip width; the two voice strips are wider */
+#define MIX_W_VOICE 88
+#define MIX_TOP 84
+#define MIX_BOT 236
+#define MIX_KNOB_Y 288
+
+static int mix_strip_x(int strip) { return 15 + (strip < 2 ? strip * MIX_W_VOICE : 2 * MIX_W_VOICE + (strip - 2) * MIX_W); }
+static int mix_strip_w(int strip) { return strip < 2 ? MIX_W_VOICE : MIX_W; }
+
+static Uint32 mix_group_col(int g) { return g == MG_A ? C_LEAF : g == MG_B ? C_AMBER : g == MG_FX ? C_WATER : C_TEXT; }
+
+
+
+/* short value for under a control: the full one without its " dB" (shown in full for the selected control) */
+static void mix_short_value(int id, char *b, int n)
+{
+    param_format_ctx(id, synth_params(syn), b, n);
+    size_t len = strlen(b);
+    if (len > 3 && !strcmp(b + len - 3, " dB")) b[len - 3] = 0;
+}
+
+static void draw_mix_fader(const MixStrip *m, int cx, int sel, const float *p)
+{
+    Uint32 col = mix_group_col(m->group);
+    int h = MIX_BOT - MIX_TOP;
+    int tx = cx - 6; /* the track, with the meter to its right */
+    fill(tx - 1, MIX_TOP, 3, h, C_PANEL2);
+    float f = param_frac(m->id, p[m->id]);
+    int ty = MIX_BOT - (int)(f * h);
+    int muted = (m->id == P_A_LEVEL || m->id == P_B_LEVEL) && voice_muted(m->id == P_B_LEVEL);
+    fill(tx - 1, ty, 3, MIX_BOT - ty, muted ? C_RUST : sel ? col : mix_col(C_PANEL2, col, 0.6f));
+    float unity = !strcmp(param_info[m->id].unit, "lvl") ? param_frac(m->id, 1.0f) :
+                  m->id == P_VOLUME ? param_frac(m->id, 0.0f) : -1;
+    if (unity >= 0) { int uy = MIX_BOT - (int)(unity * h); fill(tx - 9, uy, 4, 1, C_DIM); }
+    fill(tx - 11, ty - 4, 23, 9, sel ? C_TEXT : C_DIM); /* thumb */
+    fill(tx - 9, ty, 19, 1, C_BG);
+    if (m->meter >= 0) {
+        float mv = synth_mix_meter(syn, m->meter);
+        int mx = cx + 10;
+        fill(mx, MIX_TOP, 5, h, C_PANEL);
+        if (m->meter == MIX_LIMIT) { /* gain reduction grows down from the top */
+            int gh = (int)(fminf(mv * 2.0f, 1.0f) * h);
+            fill(mx, MIX_TOP, 5, gh, C_RUST);
+        } else {
+            float db = 20.0f * log10f(mv + 1e-6f), mf = (db + 48.0f) / 48.0f; /* -48 .. 0 dB */
+            mf = mf < 0 ? 0 : mf > 1 ? 1 : mf;
+            int mh = (int)(mf * h);
+            fill(mx, MIX_BOT - mh, 5, mh, db > -1.0f ? C_RUST : db > -9.0f ? C_AMBER : col);
+        }
+    }
+    char v[24];
+    mix_short_value(m->id, v, sizeof v);
+    text_center(cx, MIX_BOT + 8, muted ? "muted" : v, muted ? C_RUST : sel ? C_TEXT : C_DIM, 7);
+}
+
+static void draw_mix_knob(const MixStrip *m, int cx, int sel, const float *p)
+{
+    Uint32 col = mix_group_col(m->group);
+    int w = mix_strip_w(m->strip);
+    if (sel) fill(cx - w / 2 + 2, MIX_KNOB_Y - 26, w - 4, 66, C_SEL);
+    text_center(cx, MIX_KNOB_Y - 24, m->name, sel ? C_TEXT : C_DIM, 7);
+    knob(cx, MIX_KNOB_Y + 4, 13, param_frac(m->id, p[m->id]), 0, sel ? col : C_DIM);
+    char v[24];
+    mix_short_value(m->id, v, sizeof v);
+    text_center(cx, MIX_KNOB_Y + 20, v, sel ? C_TEXT : C_DIM, 7);
+}
+
+static void draw_mix_page(void)
+{
+    const float *p = synth_params(syn);
+    if (ui.sel[TAB_MIX] < 0 || ui.sel[TAB_MIX] >= MIX_N) ui.sel[TAB_MIX] = 0;
+    /* group headings over their strips */
+    for (int g = 0; g < MG_COUNT; g++) {
+        int first = -1, last = -1;
+        for (int i = 0; i < MIX_N; i++)
+            if (mix_strips[i].group == g) { if (first < 0) first = mix_strips[i].strip; last = mix_strips[i].strip; }
+        int x0 = mix_strip_x(first) + 4, x1 = mix_strip_x(last) + mix_strip_w(last) - 4;
+        Uint32 col = mix_group_col(g);
+        text_center((x0 + x1) / 2, 36, mix_group_names[g], mix_col(C_DIM, col, 0.6f), 0);
+        fill(x0, 58, x1 - x0, 1, mix_col(C_PANEL2, col, 0.4f));
+    }
+    const MixStrip *cur = &mix_strips[ui.sel[TAB_MIX]];
+    for (int i = 0; i < MIX_N; i++) { /* the selected fader's strip is lit */
+        const MixStrip *m = &mix_strips[i];
+        if (m->knob) continue;
+        int x = mix_strip_x(m->strip), w = mix_strip_w(m->strip), cx = x + w / 2, sel = m == cur;
+        if (sel) fill(x + 2, 62, w - 4, MIX_BOT - 62 + 30, C_SEL);
+        text_center(cx, 62, m->name, sel ? C_TEXT : C_DIM, 7);
+        draw_mix_fader(m, cx, sel, p);
+    }
+    for (int i = 0; i < MIX_N; i++)
+        if (mix_strips[i].knob)
+            draw_mix_knob(&mix_strips[i], mix_strip_x(mix_strips[i].strip) + mix_strip_w(mix_strips[i].strip) / 2,
+                          &mix_strips[i] == cur, p);
+    char full[64], line_[160];
+    param_format_ctx(cur->id, p, full, sizeof full);
+    snprintf(line_, sizeof line_, "%s %s  %s", mix_group_names[cur->group], param_info[cur->id].label, full);
+    char *val = strstr(line_, full);
+    for (char *c = line_; *c && c < val; c++) *c = (char)tolower((unsigned char)*c); /* names in lower case */
+    text(24, 340, line_, C_TEXT, 36);
+    text_right(624, 340, "A mute  B fine", C_PANEL2, 0);
+}
+
+/* the parameter selected on a list page (VOICES, RHYTHM, ENGINE), or -1 */
+static int selected_param(void)
+{
+    if (ui.tab == TAB_RADIO || ui.tab == TAB_MIX) return -1;
+    int rows[256];
+    const char *hdrs[256];
+    int n = build_rows(ui.tab, rows, hdrs), sel = ui.sel[ui.tab];
+    return sel >= 0 && sel < n ? rows[sel] : -1;
+}
+
 /* which of the five stages the selected setting acts on (-1: a voice or nothing) */
 static int selected_stage(void)
 {
+    if (ui.tab == TAB_MIX) return mix_strips[ui.sel[TAB_MIX]].stage;
     if (ui.tab != TAB_ENGINE) return -1;
-    int rows[256];
-    const char *hdrs[256];
-    int n = build_rows(ui.tab, rows, hdrs);
-    int sel = ui.sel[ui.tab];
-    if (sel < 0 || sel >= n || rows[sel] < 0) return -1;
-    int id = rows[sel];
+    int id = selected_param();
     if (id >= P_VOCODE && id <= P_CONVERSE) return 0;
     if (id == P_TONE || id == P_RESO || id == P_LOW || id == P_HIGH) return 1;
     if (id == P_DRIVE || id == P_FOLD || id == P_CRUSH) return 2;
@@ -1253,6 +1673,7 @@ static void draw_edit(void)
     fill(0, 0, SCREEN_W, SCREEN_H, C_BG);
     draw_tabs();
     if (ui.tab == TAB_RADIO) draw_radio_page();
+    else if (ui.tab == TAB_MIX) draw_mix_page();
     else draw_param_page();
 
     /* the two voices, then the five stages, with the stage being edited ringed */
@@ -1264,7 +1685,7 @@ static void draw_edit(void)
     }
     draw_stages(168, 402, 64, 12, 26, selected_stage(), 0);
     draw_beat(440, 456);
-    text(16, 456, "L1/R1 page  Y dice  START play", C_PANEL2, 0);
+    text(16, 456, ui.tab == TAB_MIX ? "L1/R1 page  Y reset  START play" : "L1/R1 page  Y dice  START play", C_PANEL2, 0);
 }
 
 /* ================================================================== input */
@@ -1276,11 +1697,19 @@ static void set_pitch(void)
     synth_note_off(syn, note); /* the pitch stays on the last note */
 }
 
-static void do_grab(void)
+/* a fresh slice from the stream for one voice (0, 1) or both (-1); LIVE voices have nothing to grab */
+static void do_grab(int osc)
 {
-    synth_grab(syn, -1);
+    synth_grab(syn, osc);
+    ui.grab_osc = osc;
     ui.grab_flash = SDL_GetTicks() + 600;
+    for (int o = 0; o < 2; o++)
+        if ((osc < 0 || osc == o) && (int)synth_get_param(syn, P_A_MODE + o * OSC_STRIDE) == OSC_LIVE)
+            toast(osc < 0 ? "grabbed (voice %c is LIVE: nothing to grab)" : "voice %c is LIVE: nothing to grab", 'A' + o);
 }
+
+/* PLAY: the selected rhythm's voice, or both when the cross rhythm is selected */
+static int play_voice(void) { return SEQ_VOICE(ui.cell) == SEQ_X ? -1 : SEQ_VOICE(ui.cell); }
 
 static void hop(int o)
 {
@@ -1313,49 +1742,100 @@ static void adjust_param(int id, int dir)
 
 /* ---- rhythm cells on the PLAY page, played like hi5's pattern grid ---- */
 
-static void cell_say(int o, int c)
+/* start / stop the rhythms; starting begins again from the downbeat */
+static void transport_toggle(void)
+{
+    if (sync_status()->following) { toast("the lead unit starts and stops the rhythms"); return; }
+    SDL_LockAudio();
+    int run = !synth_running(syn);
+    if (run) synth_tap_reset(syn);
+    synth_set_running(syn, run);
+    SDL_UnlockAudio();
+    toast(run ? "rhythms playing" : "rhythms stopped (voices with a rhythm are quiet)");
+}
+
+/* mute or unmute a voice (it fades over a few ms) */
+static void toggle_mute(int o)
+{
+    synth_set_param(syn, P_A_MUTE + o * OSC_STRIDE, !voice_muted(o));
+    toast(voice_muted(o) ? "voice %c muted" : "voice %c back", 'A' + o);
+    ui.dirty_settings = 1;
+}
+
+static void cell_say(int q)
 {
     const float *p = synth_params(syn);
     char rate[24];
-    param_format_ctx(P_A_RATE + o * OSC_STRIDE, p, rate, sizeof rate);
-    if (!(int)p[CELL_PARAM(o, c, 0)]) toast("%c rhythm off (always open)", 'A' + o);
-    else toast("%c  E(%d,%d) >%d  %s", 'A' + o, (int)p[CELL_PARAM(o, c, 2)],
-               (int)p[CELL_PARAM(o, c, 1)], (int)p[CELL_PARAM(o, c, 3)], rate);
+    param_format_ctx(SEQ_SHAPE(q, RATE), p, rate, sizeof rate);
+    if (q >= SEQ_SA) {
+        int o = SEQ_VOICE(q);
+        char mode[16];
+        param_format_ctx(RHYTHM_P(o, STUT_MODE), p, mode, sizeof mode);
+        if (!(int)p[SEQ_PARAM(q, 0)]) toast("%s off", seq_name(q));
+        else toast("%s  E(%d,%d) >%d  x%d %s", seq_name(q), (int)p[SEQ_PARAM(q, 2)], (int)p[SEQ_PARAM(q, 1)],
+                   (int)p[SEQ_PARAM(q, 3)], (int)p[RHYTHM_P(o, STUT_RATCHET)], mode);
+        return;
+    }
+    if (!(int)p[SEQ_PARAM(q, 0)]) toast(q == SEQ_X ? "cross rhythm off (cross always on)" : "%s rhythm off (always open)", seq_name(q));
+    else toast("%s  E(%d,%d) >%d  %s", seq_name(q), (int)p[SEQ_PARAM(q, 2)], (int)p[SEQ_PARAM(q, 1)],
+               (int)p[SEQ_PARAM(q, 3)], rate);
 }
 
 /* keep pulses and rotation inside the pattern */
-static void cell_fix(int o, int c)
+static void cell_fix(int q)
 {
-    int st = (int)synth_get_param(syn, CELL_PARAM(o, c, 1));
-    if (synth_get_param(syn, CELL_PARAM(o, c, 2)) > st) synth_set_param(syn, CELL_PARAM(o, c, 2), (float)st);
-    if (synth_get_param(syn, CELL_PARAM(o, c, 3)) >= st) synth_set_param(syn, CELL_PARAM(o, c, 3), (float)(st - 1));
+    int st = (int)synth_get_param(syn, SEQ_PARAM(q, 1));
+    if (synth_get_param(syn, SEQ_PARAM(q, 2)) > st) synth_set_param(syn, SEQ_PARAM(q, 2), (float)st);
+    if (synth_get_param(syn, SEQ_PARAM(q, 3)) >= st) synth_set_param(syn, SEQ_PARAM(q, 3), (float)(st - 1));
 }
 
 static void cell_button(int b)
 {
-    int o = ui.cell / NCELL, c = ui.cell % NCELL;
-    int on = CELL_PARAM(o, c, 0), steps = CELL_PARAM(o, c, 1), pulses = CELL_PARAM(o, c, 2), rot = CELL_PARAM(o, c, 3);
+    static const int order[SEQ_COUNT] = {SEQ_A, SEQ_SA, SEQ_X, SEQ_SX, SEQ_SB, SEQ_B}; /* left to right on screen */
+    int q = ui.cell;
+    int on = SEQ_PARAM(q, 0), steps = SEQ_PARAM(q, 1), pulses = SEQ_PARAM(q, 2), rot = SEQ_PARAM(q, 3);
     int st = (int)synth_get_param(syn, steps);
     if (ui.held[B_L2]) { /* steps, rate and gate length */
         ui.l2_used = 1;
-        if (b == B_UP || b == B_DOWN) { synth_set_param(syn, steps, st + (b == B_UP ? 1 : -1)); cell_fix(o, c); }
-        if (b == B_LEFT || b == B_RIGHT) {
-            int r = P_A_RATE + o * OSC_STRIDE; /* right = faster = a shorter note value */
-            synth_set_param(syn, r, synth_get_param(syn, r) + (b == B_RIGHT ? -1 : 1));
+        if (b == B_UP || b == B_DOWN) { synth_set_param(syn, steps, st + (b == B_UP ? 1 : -1)); cell_fix(q); }
+        if (b == B_LEFT || b == B_RIGHT) { /* jump between 1/4, 1/8, 1/16 and 1/32; right = faster */
+            static const int quick[] = {0, 1, 3, 7}; /* indices of 1/32, 1/16, 1/8, 1/4 in the rate list */
+            int r = SEQ_SHAPE(q, RATE), cur = (int)synth_get_param(syn, r), next = cur;
+            if (b == B_RIGHT) { for (int i = 3; i >= 0; i--) if (quick[i] < cur) { next = quick[i]; break; } }
+            else { for (int i = 0; i < 4; i++) if (quick[i] > cur) { next = quick[i]; break; } }
+            synth_set_param(syn, r, (float)next);
+        }
+        if (b == B_A) { transport_toggle(); return; }
+        if (q < SEQ_SA && b == B_B) { /* a voice's ring: mute it */
+            if (q == SEQ_X) toast("select voice A or B to mute it");
+            else toggle_mute(q);
+            return;
+        }
+        if (q >= SEQ_SA && (b == B_X || b == B_Y || b == B_B)) { /* stutter: ratchets and mode */
+            int o = SEQ_VOICE(q);
+            int id = b == B_B ? RHYTHM_P(o, STUT_MODE) : RHYTHM_P(o, STUT_RATCHET);
+            if (b == B_B) synth_set_param(syn, id, param_adjust(id, synth_get_param(syn, id), 1, 0));
+            else synth_set_param(syn, id, synth_get_param(syn, id) + (b == B_X ? 1 : -1));
+            synth_set_param(syn, on, 1);
+            cell_say(q);
+            ui.dirty_settings = 1;
+            return;
         }
         if (b == B_X || b == B_Y) {
-            int l = P_A_LENGTH + o * OSC_STRIDE;
+            int l = SEQ_SHAPE(q, LENGTH);
             synth_set_param(syn, l, synth_get_param(syn, l) + (b == B_X ? 0.05f : -0.05f));
             char v[16];
             param_format_ctx(l, synth_params(syn), v, sizeof v);
-            toast("%c gate length %s", 'A' + o, v);
+            toast("%s gate length %s", seq_name(q), v);
             ui.dirty_settings = 1;
             return;
         }
     } else {
+        int pos = 0;
+        for (int i = 0; i < SEQ_COUNT; i++) if (order[i] == q) pos = i;
         switch (b) {
-        case B_LEFT: ui.cell = (ui.cell + NCELL * 2 - 1) % (NCELL * 2); break;
-        case B_RIGHT: ui.cell = (ui.cell + 1) % (NCELL * 2); break;
+        case B_LEFT: ui.cell = order[(pos + SEQ_COUNT - 1) % SEQ_COUNT]; break;
+        case B_RIGHT: ui.cell = order[(pos + 1) % SEQ_COUNT]; break;
         case B_UP: synth_set_param(syn, pulses, synth_get_param(syn, pulses) + 1); synth_set_param(syn, on, 1); break;
         case B_DOWN: synth_set_param(syn, pulses, synth_get_param(syn, pulses) - 1); break;
         case B_A: synth_set_param(syn, on, !(int)synth_get_param(syn, on)); break;
@@ -1368,7 +1848,7 @@ static void cell_button(int b)
         case B_X: synth_set_param(syn, rot, (float)(((int)synth_get_param(syn, rot) + 1) % st)); break;
         case B_Y: { /* a new random Euclidean pattern */
             static const int lens[] = {5, 6, 7, 8, 9, 10, 11, 12, 13, 16, 16, 16};
-            int n = lens[rand() % 12], kmax = n * 2 / 3 > 1 ? n * 2 / 3 : 1;
+            int n = lens[rand() % 12], kmax = q >= SEQ_SA ? (n / 3 > 1 ? n / 3 : 1) : (n * 2 / 3 > 1 ? n * 2 / 3 : 1);
             synth_set_param(syn, steps, (float)n);
             synth_set_param(syn, pulses, (float)(1 + rand() % kmax));
             synth_set_param(syn, rot, (float)(rand() % n));
@@ -1378,9 +1858,7 @@ static void cell_button(int b)
         default: return;
         }
     }
-    o = ui.cell / NCELL;
-    c = ui.cell % NCELL;
-    cell_say(o, c);
+    cell_say(ui.cell);
     ui.dirty_settings = 1;
 }
 
@@ -1403,8 +1881,23 @@ static void dice_section(void)
     ui.dirty_settings = 1;
 }
 
+/* EDIT: the voice the selected setting belongs to, or -1 (both) */
+static int edit_voice(void)
+{
+    if (ui.tab == TAB_MIX) { int g = mix_strips[ui.sel[TAB_MIX]].group; return g == MG_A ? 0 : g == MG_B ? 1 : -1; }
+    int id = selected_param();
+    if (id < P_A_STATION || id > P_B_STUT_CHANCE) return -1;
+    return id >= P_B_STATION;
+}
+
 static void edit_nav(int b)
 {
+    if (ui.tab == TAB_MIX) {
+        if (b == B_LEFT) ui.sel[TAB_MIX] = (ui.sel[TAB_MIX] + MIX_N - 1) % MIX_N;
+        if (b == B_RIGHT) ui.sel[TAB_MIX] = (ui.sel[TAB_MIX] + 1) % MIX_N;
+        if (b == B_UP || b == B_DOWN) adjust_param(mix_strips[ui.sel[TAB_MIX]].id, b == B_UP ? 1 : -1);
+        return;
+    }
     if (ui.tab == TAB_RADIO) {
         int n = stations.count;
         if (b == B_UP && n) ui.radio_sel = (ui.radio_sel + n - 1) % n;
@@ -1490,13 +1983,22 @@ static void on_press(int b)
         }
         return;
     }
-    if (b == B_L2 || b == B_X) do_grab();
-    if (b == B_Y) dice_section();
+    if (b == B_L2 || b == B_X) do_grab(edit_voice());
+    if (b == B_A && ui.tab == TAB_MIX) { /* mute the voice of the selected control */
+        int g = mix_strips[ui.sel[TAB_MIX]].group;
+        if (g == MG_A || g == MG_B) toggle_mute(g == MG_B);
+    }
+    if (b == B_Y && ui.tab == TAB_MIX) { /* back to unity / the default */
+        const MixStrip *m = &mix_strips[ui.sel[TAB_MIX]];
+        synth_set_param(syn, m->id, param_info[m->id].def);
+        toast("%s %s reset", mix_group_names[m->group], m->name);
+        ui.dirty_settings = 1;
+    } else if (b == B_Y) dice_section();
 }
 
 static void on_release(int b)
 {
-    if (ui.screen == SCR_PLAY && ui.overlay == OV_NONE && b == B_L2 && !ui.l2_used) do_grab(); /* a tap of L2 */
+    if (ui.screen == SCR_PLAY && ui.overlay == OV_NONE && b == B_L2 && !ui.l2_used) do_grab(play_voice()); /* a tap of L2 */
 }
 
 static void held_keys_update(Uint32 now)
@@ -1547,8 +2049,16 @@ static void logic_update(Uint32 now)
         ui.scan_results = scan_tmp;
         ui.scan_sel = ui.scan_scroll = 0;
     }
-    static Uint32 last_save;
-    if (ui.dirty_settings && now - last_save > 5000) { save_settings(); last_save = now; }
+    /* save once the settings have stopped changing for a few seconds, so tweaking doesn't keep writing to the card */
+    static Uint32 last_change;
+    static unsigned last_hash;
+    unsigned h = 2166136261u;
+    const float *p = synth_params(syn);
+    for (int i = 0; i < P_COUNT; i++) { unsigned v; memcpy(&v, &p[i], sizeof v); h = (h ^ v) * 16777619u; }
+    h = (h ^ (unsigned)ui.octave) * 16777619u;
+    if (h != last_hash) { last_hash = h; last_change = now; }
+    if (ui.dirty_settings && now - last_change > 4000) save_settings_ex(1);
+    audio_report(now);
 }
 
 /* ================================================================== presentation */
@@ -1811,7 +2321,9 @@ int main(int argc, char **argv)
         if (!strcmp(shot_view, "edit")) ui.tab = shot_tab;
         if (!strcmp(shot_view, "radio")) ui.tab = TAB_RADIO;
         if (!strcmp(shot_view, "rhythm")) ui.tab = TAB_RHYTHM;
+        if (!strcmp(shot_view, "rhythmx")) { ui.tab = TAB_RHYTHM; ui.sel[TAB_RHYTHM] = 99; }
         if (!strcmp(shot_view, "engine")) ui.tab = TAB_ENGINE;
+        if (!strcmp(shot_view, "mix")) ui.tab = TAB_MIX;
         if (!strcmp(shot_view, "kb")) open_keyboard(KB_ADD_URL, "http://ice1.somafm.com/");
         if (!strcmp(shot_view, "scan")) ui.overlay = OV_SCANMENU;
         /* let the engine run a moment so the rings and waves have something to show */
