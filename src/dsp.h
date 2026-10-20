@@ -16,7 +16,9 @@
     P_##X##_STATION, P_##X##_MODE, P_##X##_TUNE, P_##X##_SIZE, P_##X##_TEXTURE, P_##X##_DIR, P_##X##_FOCUS, P_##X##_LEVEL, \
     P_##X##_PAN, P_##X##_DRIVE, P_##X##_OSC, P_##X##_OSC_MIX,                                                                             \
     P_##X##_GATE_ON, P_##X##_GATE_STEPS, P_##X##_GATE_PULSES, P_##X##_GATE_ROT,                                 \
-    P_##X##_RATE, P_##X##_LENGTH, P_##X##_ATTACK, P_##X##_RELEASE, P_##X##_CHANCE
+    P_##X##_RATE, P_##X##_LENGTH, P_##X##_ATTACK, P_##X##_RELEASE, P_##X##_CHANCE,                              \
+    P_##X##_STUT_ON, P_##X##_STUT_STEPS, P_##X##_STUT_PULSES, P_##X##_STUT_ROT,                                 \
+    P_##X##_STUT_RATCHET, P_##X##_STUT_MODE, P_##X##_STUT_CHANCE
 
 enum {
     VOICE_FIELDS(A), /* VOICE B id = VOICE A id + OSC_STRIDE */
@@ -40,9 +42,15 @@ enum { CELL_GATE, NCELL };
 #define CELL_STRIDE 4
 #define CELL_PARAM(osc, cell, field) (P_A_GATE_ON + (osc) * OSC_STRIDE + (cell) * CELL_STRIDE + (field)) /* field 0 on, 1 steps, 2 pulses, 3 rotate */
 /* the three rhythms: voice A, voice B and the cross rhythm */
-enum { SEQ_A, SEQ_B, SEQ_X, SEQ_COUNT };
-#define SEQ_PARAM(seq, field) ((seq) == SEQ_X ? P_X_GATE_ON + (field) : CELL_PARAM(seq, CELL_GATE, field))
-#define SEQ_SHAPE(seq, p) ((seq) == SEQ_X ? P_X_##p : P_A_##p + (seq) * OSC_STRIDE) /* RATE, LENGTH, ATTACK, RELEASE, CHANCE */
+/* The five rhythms: each voice's gate, the cross rhythm, and each voice's stutter (ratchets on the steps it marks,
+ * running at its voice's rate). */
+enum { SEQ_A, SEQ_B, SEQ_X, SEQ_SA, SEQ_SB, SEQ_COUNT };
+#define STUT_PARAM(osc, field) (P_A_STUT_ON + (osc) * OSC_STRIDE + (field)) /* field 0 on, 1 steps, 2 pulses, 3 rotate */
+#define SEQ_VOICE(seq) ((seq) == SEQ_SA ? 0 : (seq) == SEQ_SB ? 1 : (seq)) /* SEQ_X: 2 (no voice) */
+#define SEQ_PARAM(seq, field) ((seq) == SEQ_X ? P_X_GATE_ON + (field) : \
+                               (seq) >= SEQ_SA ? STUT_PARAM((seq) - SEQ_SA, field) : CELL_PARAM(seq, CELL_GATE, field))
+#define SEQ_SHAPE(seq, p) ((seq) == SEQ_X ? P_X_##p : P_A_##p + SEQ_VOICE(seq) * OSC_STRIDE) /* RATE, LENGTH, ... */
+enum { STUT_REPEAT, STUT_REVERSE, STUT_RANDOM };
 
 enum { OSC_LIVE, OSC_LOOP, OSC_WAVE, OSC_GRAIN };
 enum { FOCUS_ALL, FOCUS_VOICE, FOCUS_MUSIC };
@@ -108,6 +116,7 @@ float synth_cell_flash(const Synth *s, int osc, int cell);  /* 1 on a hit, fadin
 int synth_seq_step(const Synth *s, int seq);           /* current step of SEQ_A, SEQ_B or SEQ_X */
 float synth_seq_flash(const Synth *s, int seq);
 float synth_cross_gate(const Synth *s);                /* how open the cross rhythm is now, 0..1 */
+int synth_stutter_active(const Synth *s, int osc);     /* ratchets on this step (0 = none) */
 float synth_gate_value(const Synth *s, int osc);       /* how open the voice is now, 0..1 */
 float synth_speechness(const Synth *s, int osc);       /* 0 music .. 1 speech */
 int synth_voice_state(const Synth *s, int osc);        /* VS_* */

@@ -14,6 +14,7 @@
 static const char *const osc_modes[] = {"LIVE", "LOOP", "WAVE", "GRAIN", NULL};
 static const char *const focuses[] = {"ALL SOUND", "VOICES ONLY", "MUSIC ONLY", NULL};
 static const char *const directions[] = {"FORWARD", "REVERSE", "BOTH", NULL};
+static const char *const stut_modes[] = {"REPEAT", "REVERSE", "RANDOM", NULL};
 const char *const category_names[] = {"ANY", "VOICE", "MUSIC", "SOUND", NULL};
 static const char *const offon[] = {"OFF", "ON", NULL};
 static const char *const osc_waves[] = {"OFF", "SINE", "TRIANGLE", "SAW", "SQUARE", NULL};
@@ -61,7 +62,14 @@ int euclid_hit(int steps, int pulses, int rotate, int step)
     [P_##X##_LENGTH] = {x "_length", "Gate Length", PAGE_RHYTHM, 0.05f, 1, length, 0.05f, 0, "", NULL},          \
     [P_##X##_ATTACK] = {x "_attack", "Gate Attack", PAGE_RHYTHM, 0, 1, 0, 0.05f, 0, "", NULL},                   \
     [P_##X##_RELEASE] = {x "_release", "Gate Release", PAGE_RHYTHM, 0, 1, 0.25f, 0.05f, 0, "", NULL},            \
-    [P_##X##_CHANCE] = {x "_chance", "Chance", PAGE_RHYTHM, 0, 1, 1, 0.05f, 0, "", NULL}
+    [P_##X##_CHANCE] = {x "_chance", "Chance", PAGE_RHYTHM, 0, 1, 1, 0.05f, 0, "", NULL},                        \
+    [P_##X##_STUT_ON] = {x "_stut_on", "Stutter", PAGE_RHYTHM, 0, 1, 0, 1, 0, "", offon},                         \
+    [P_##X##_STUT_STEPS] = {x "_stut_steps", "Stutter Steps", PAGE_RHYTHM, 1, 16, 8, 1, 0, "int", NULL},          \
+    [P_##X##_STUT_PULSES] = {x "_stut_pulses", "Stutter Pulses", PAGE_RHYTHM, 0, 16, 1, 1, 0, "int", NULL},       \
+    [P_##X##_STUT_ROT] = {x "_stut_rot", "Stutter Rotate", PAGE_RHYTHM, 0, 15, 3, 1, 0, "int", NULL},             \
+    [P_##X##_STUT_RATCHET] = {x "_ratchet", "Ratchets", PAGE_RHYTHM, 2, 8, 3, 1, 0, "int", NULL},                 \
+    [P_##X##_STUT_MODE] = {x "_stut_mode", "Stutter Mode", PAGE_RHYTHM, 0, 2, 0, 1, 0, "", stut_modes},          \
+    [P_##X##_STUT_CHANCE] = {x "_stut_chance", "Stutter Chance", PAGE_RHYTHM, 0, 1, 1, 0.05f, 0, "", NULL}
 
 const ParamInfo param_info[P_COUNT] = {
     /* A plays the radio as it is, pulsing gently; B slices it into a five-against-eight rhythm. */
@@ -106,13 +114,14 @@ const ParamInfo param_info[P_COUNT] = {
     [P_X_CHANCE]      = {"x_chance", "Chance", PAGE_RHYTHM, 0, 1, 1, 0.05f, 0, "", NULL},
 };
 
-static int osc_of(int id) { return id >= P_A_STATION && id <= P_B_CHANCE ? (id - P_A_STATION) / OSC_STRIDE : -1; }
+static int osc_of(int id) { return id >= P_A_STATION && id <= P_B_STUT_CHANCE ? (id - P_A_STATION) / OSC_STRIDE : -1; }
 static int osc_field(int id) { return (id - P_A_STATION) % OSC_STRIDE + P_A_STATION; }
 
 const char *param_section(int id)
 {
     int o = osc_of(id);
     if (o >= 0) {
+        if (osc_field(id) >= P_A_STUT_ON) return o ? "STUTTER B" : "STUTTER A";
         if (osc_field(id) >= P_A_GATE_ON) return o ? "RHYTHM B" : "RHYTHM A";
         return o ? "VOICE B" : "VOICE A";
     }
@@ -238,6 +247,7 @@ void param_format_ctx(int id, const float *params, char *buf, int n)
 #define CAP_N (1 << 18)     /* live capture per voice (frames): 5.4 s @ 48 kHz */
 #define SNAP_N (1 << 17)    /* grabbed loop / wavetable (frames): 2.73 s @ 48 kHz, so Size tops out at 2700 ms */
 #define DLY_N (1 << 17)
+#define STUT_N (1 << 17)    /* stutter recording per voice (frames): 2.7 s @ 48 kHz, longer than any step */
 #define REV_N 8192
 #define REV_LINES 5
 #define AP_N 1024
@@ -277,6 +287,11 @@ typedef struct {
     float morph, morph_step;
     double phase;
     int bounce;           /* DIR_BOTH: playing the loop backwards this time round */
+    /* stutter: the voice's output is recorded; on a stutter step its first slice repeats (ratchets) */
+    float *stut_buf;
+    unsigned stut_w, stut_mark;
+    int stut_n, stut_rev, stut_idx;
+    float stut_seg, stut_t, stut_flash;
     float timer;
     int want_grab, last_mode;
     int snap_silent;      /* the last grab caught silence (stream not started yet): try again soon */
@@ -390,6 +405,7 @@ Synth *synth_create(int sample_rate)
         os->cap = calloc(CAP_N * 2, sizeof(float));
         os->snap[0] = calloc(SNAP_N * 2, sizeof(float));
         os->snap[1] = calloc(SNAP_N * 2, sizeof(float));
+        os->stut_buf = calloc(STUT_N * 2, sizeof(float));
         os->last_mode = -1;
         os->focus_gain = 1;
         os->gate = 1;
@@ -397,7 +413,7 @@ Synth *synth_create(int sample_rate)
         os->step_abs = -1;
         os->vad.flen = sample_rate / 50; /* 20 ms frames */
         os->vad.speech = 0.5f;
-        ok = ok && os->cap && os->snap[0] && os->snap[1];
+        ok = ok && os->cap && os->snap[0] && os->snap[1] && os->stut_buf;
     }
     if (!ok) { synth_destroy(s); return NULL; }
     for (int i = 0; i < P_COUNT; i++) s->p[i] = param_info[i].def;
@@ -427,6 +443,7 @@ void synth_destroy(Synth *s)
         free(s->osc[o].cap);
         free(s->osc[o].snap[0]);
         free(s->osc[o].snap[1]);
+        free(s->osc[o].stut_buf);
     }
     for (int i = 0; i < REV_LINES; i++) free(s->rev[i]);
     for (int i = 0; i < 4; i++) free(s->ap[i]);
@@ -445,8 +462,15 @@ float synth_speechness(const Synth *s, int o) { return s->osc[o].vad.speech; }
 int synth_voice_state(const Synth *s, int o) { return s->osc[o].vad.state; }
 float synth_osc_level(const Synth *s, int o) { return s->osc[o].level; }
 float synth_leveller_gain(const Synth *s) { return s->lev_gain; }
-int synth_seq_step(const Synth *s, int q) { return q == SEQ_X ? s->x_idx : s->osc[q].cell_idx[CELL_GATE]; }
-float synth_seq_flash(const Synth *s, int q) { return q == SEQ_X ? s->x_flash : s->osc[q].cell_flash[CELL_GATE]; }
+int synth_seq_step(const Synth *s, int q)
+{
+    return q == SEQ_X ? s->x_idx : q >= SEQ_SA ? s->osc[q - SEQ_SA].stut_idx : s->osc[q].cell_idx[CELL_GATE];
+}
+float synth_seq_flash(const Synth *s, int q)
+{
+    return q == SEQ_X ? s->x_flash : q >= SEQ_SA ? s->osc[q - SEQ_SA].stut_flash : s->osc[q].cell_flash[CELL_GATE];
+}
+int synth_stutter_active(const Synth *s, int o) { return s->osc[o].stut_n; }
 float synth_cross_gate(const Synth *s) { return s->x_gate; }
 float synth_mix_meter(const Synth *s, int ch) { return ch >= 0 && ch < MIX_COUNT ? s->meter[ch] : 0; }
 int synth_floor(const Synth *s) { return s->p[P_CONVERSE] > 0.01f ? s->floor_holder : -1; }
@@ -516,7 +540,9 @@ static void dice_range(int id, float *lo, float *hi)
     case P_A_SIZE: *lo = 2; *hi = 600; break;
     case P_A_LEVEL: *lo = 0.6f; *hi = 1; break;
     case P_A_PAN: *lo = -0.7f; *hi = 0.7f; break;
-    case P_A_GATE_STEPS: case P_X_GATE_STEPS: *lo = 3; *hi = 16; break;
+    case P_A_GATE_STEPS: case P_X_GATE_STEPS: case P_A_STUT_STEPS: *lo = 3; *hi = 16; break;
+    case P_A_STUT_RATCHET: *lo = 2; *hi = 4; break;
+    case P_A_STUT_CHANCE: *lo = 0.4f; *hi = 1; break;
     case P_A_ATTACK: case P_X_ATTACK: *lo = 0; *hi = 0.5f; break;
     case P_A_RELEASE: case P_X_RELEASE: *lo = 0; *hi = 0.6f; break;
     case P_A_RATE: case P_X_RATE: *lo = 1; *hi = 11; break;
@@ -609,7 +635,11 @@ void synth_dice(Synth *s, int which)
         if (rnd01(s) < 0.7f) s->p[P_CONVERSE] = 0;
     }
     if (which == DICE_RHYTHM)
-        for (int o = 0; o < 2; o++) s->p[CELL_PARAM(o, CELL_GATE, 0)] = rnd01(s) < 0.85f ? 1 : 0;
+        for (int o = 0; o < 2; o++) {
+            s->p[CELL_PARAM(o, CELL_GATE, 0)] = rnd01(s) < 0.85f ? 1 : 0;
+            s->p[STUT_PARAM(o, 0)] = rnd01(s) < 0.4f ? 1 : 0;   /* stutters stay occasional */
+            if (s->p[STUT_PARAM(o, 2)] > 3) s->p[STUT_PARAM(o, 2)] = 1 + floorf(rnd01(s) * 3); /* a few ratcheted steps */
+        }
     if (which == DICE_SOUND) {
         if (rnd01(s) < 0.6f) s->p[P_DRIVE] = 0;
         if (rnd01(s) < 0.7f) s->p[P_CRUSH] = 0;
@@ -907,19 +937,69 @@ static float euclid_gate(Synth *s, int q, double beat, long *step_abs, int *idx,
     return g * g * (3 - 2 * g);
 }
 
-/* Each voice's rhythm opens it on every pulse. A LOOP voice also restarts its slice on every pulse. */
+/* Each voice's rhythm opens it on every pulse. A LOOP voice also restarts its slice on every pulse.
+ * On a step its stutter rhythm marks, the voice opens for the whole step and its first slice ratchets. */
 static float rhythm_eval(Synth *s, int idx, double beat)
 {
     Osc *o = &s->osc[idx];
+    long before = o->step_abs;
     int nh;
     float g = euclid_gate(s, idx, beat, &o->step_abs, &o->cell_idx[CELL_GATE], &o->cell_hit[CELL_GATE],
                           &o->cell_flash[CELL_GATE], &nh);
+    const float *p = s->p + idx * OSC_STRIDE;
+    if (o->step_abs != before) { /* a new step: does it stutter? */
+        int steps = (int)p[P_A_STUT_STEPS];
+        o->stut_idx = (int)(o->step_abs % steps);
+        o->stut_n = 0;
+        if ((int)p[P_A_STUT_ON] && s->running &&
+            euclid_hit(steps, (int)p[P_A_STUT_PULSES], (int)p[P_A_STUT_ROT], o->stut_idx) &&
+            rnd01(s) < p[P_A_STUT_CHANCE]) {
+            int n = (int)p[P_A_STUT_RATCHET], mode = (int)p[P_A_STUT_MODE];
+            if (mode == STUT_RANDOM) n = 2 + (int)(rnd01(s) * (n - 1) + 0.5f);
+            float step_s = rate_beats[(int)p[P_A_RATE]] * 60.0f / s->p[P_BPM];
+            o->stut_n = n;
+            o->stut_rev = mode == STUT_REVERSE || (mode == STUT_RANDOM && rnd01(s) < 0.3f);
+            o->stut_seg = step_s * s->fs / n;
+            if (o->stut_seg > STUT_N / 2) o->stut_seg = STUT_N / 2;
+            if (o->stut_seg < 32) o->stut_seg = 32;
+            o->stut_mark = o->stut_w;
+            o->stut_t = 0;
+            o->stut_flash = 1;
+        }
+    }
+    if (!s->running) o->stut_n = 0;
     if (nh) {
         int mode = (int)s->p[P_A_MODE + idx * OSC_STRIDE];
         if (mode == OSC_LOOP) { o->phase = 0; o->bounce = 0; }
         if (mode == OSC_GRAIN) o->grain_timer = 0;
     }
-    return g;
+    return o->stut_n ? 1.0f : g;
+}
+
+/* record the voice's sound, and on a stutter step replace it with ratchets of the step's first slice */
+static inline void stutter_tick(Synth *s, Osc *o)
+{
+    unsigned w = o->stut_w & (STUT_N - 1);
+    o->stut_buf[w * 2] = o->out[0];
+    o->stut_buf[w * 2 + 1] = o->out[1];
+    o->stut_w++;
+    if (!o->stut_n) return;
+    float seg = o->stut_seg, t = o->stut_t;
+    int k = (int)(t / seg);
+    float pos = t - k * seg;
+    if (k >= o->stut_n) { o->stut_n = 0; return; } /* the step ran long (tempo change): let go */
+    float fade = 0.002f * s->fs, e = 1.0f; /* 2 ms edges on every ratchet so they click only as hard as intended */
+    if (pos < fade && k > 0) e = pos / fade;
+    if (seg - pos < fade) e = fminf(e, (seg - pos) / fade);
+    if (k > 0) {
+        float rp = o->stut_rev && (k & 1) ? seg - 1 - pos : pos;
+        unsigned r = (o->stut_mark + (unsigned)rp) & (STUT_N - 1);
+        o->out[0] = o->stut_buf[r * 2];
+        o->out[1] = o->stut_buf[r * 2 + 1];
+    }
+    o->out[0] *= e;
+    o->out[1] *= e;
+    o->stut_t = t + 1;
 }
 
 /* ------------------------------------------------------------------ reverb */
@@ -1032,6 +1112,7 @@ void synth_process(Synth *s, const float *inA, const float *inB, float *out, int
             for (int c = 0; c < NCELL; c++) s->osc[o].cell_flash[c] *= expf(-n / (0.15f * fs));
         }
         s->x_flash *= expf(-n / (0.15f * fs));
+        for (int o = 0; o < 2; o++) s->osc[o].stut_flash *= expf(-n / (0.15f * fs));
         s->s_vol += (db2lin(s->p[P_VOLUME]) - s->s_vol) * 0.15f;
         for (int f = 0; f < 4; f++) s->s_fx[f] += (s->p[P_CROSS_LEVEL + f] - s->s_fx[f]) * 0.15f;
         const float cross_lvl = s->s_fx[0], shape_lvl = s->s_fx[1], echo_lvl = s->s_fx[2], space_lvl = s->s_fx[3];
@@ -1126,6 +1207,7 @@ void synth_process(Synth *s, const float *inA, const float *inB, float *out, int
                 if (k2 == 1 && fm > 0.001f) fmr = exp2f(fm * xgate * 4.0f * vm[first] * 2.0f);
                 osc_tick(s, o, ratio[o] * fmr, freq[o] * fmr);
                 float gg = rhythm_eval(s, o, beat);
+                stutter_tick(s, os);
                 os->gate += (gg - os->gate) * 0.04f;
                 float vl = os->out[0] * os->gate, vr = os->out[1] * os->gate;
                 /* speech-band activity of this voice (before ducking), for converse */

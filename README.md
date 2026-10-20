@@ -27,7 +27,11 @@ a wavefolder, echo and space.
   and chance, and a gate shape (attack, length, release) from soft swells to sharp chops. With the rhythm off,
   the voice plays continuously. A third, **cross rhythm** brings the cross-modulation (morph, vocode, ring,
   FM) in on its pulses, with the same controls and gate shape; off, the cross stage stays on as set. All three
-  rhythms are played directly on the PLAY page, as on hi5. Tap tempo (SELECT) and Wi-Fi sync drive them all.
+  rhythms are played directly on the PLAY page, as on hi5.
+- **Stutter.** Each voice also has a **stutter rhythm**: on the steps it marks, the voice opens for the whole step
+  and its first slice repeats 2 to 8 times (ratchets), in one of three modes: REPEAT, REVERSE (every other
+  ratchet backwards) or RANDOM (a random count, sometimes reversed). It runs at its voice's rate, works on any
+  engine, and is turned on and off like the other rhythms. Tap tempo (SELECT) and Wi-Fi sync drive them all.
 - **Cross-modulation.**
   - **Vocode:** A speaks through B, or B through A, with 5, 8, 13, 21 or 34 bands.
   - **FM:** one voice bends the other's pitch.
@@ -62,6 +66,8 @@ The PLAY page is for performing: the two rhythms and the sound, live.
   outside for the voice as it sounds. Each is scaled to its own recent peak, so a quiet station still swings wide,
   and the outer one opens and closes with the voice's rhythm. Five dots underneath show how speech-like the
   station is.
+- **Stutter rings.** Under each voice, its stutter rhythm drawn geometrically: the pulses joined into a polygon
+  that flashes when a step ratchets, with the ratchet count beside it (`x3`, `<` for reverse, `?` for random).
 - **Rhythm rings.** Each voice wears its rhythm around its rim: coloured pulses, a white ring on the current step,
   and pulses/steps and the rate under the engine name. The cross rhythm circles the centre the same way.
 - **Spectrum backdrop.** A soft frequency spectrum of the overall sound behind the circles. Its colour follows
@@ -103,20 +109,22 @@ With the card mounted on a computer, `make install SD=/path/to/card` copies the 
 
 **PLAY** (performance)
 
-The three rhythm rings (voice A, cross in the middle, voice B) are played like hi5's pattern cells. The selected
+The five rhythm rings (voice A, A's stutter, cross in the middle, B's stutter, voice B) are played like hi5's
+pattern cells. The selected
 ring is outlined, and every change shows its pattern briefly, like `A  E(5,8) >2  1/8`.
 
 | Button | Action |
 |---|---|
-| D-pad left / right | select the rhythm: voice A, cross or voice B |
+| D-pad left / right | select the rhythm: voice A, A stutter, cross, B stutter, voice B |
 | D-pad up / down | more / fewer pulses |
-| A | rhythm on / off (off = the voice plays continuously) |
+| A | rhythm on / off (off = the voice plays continuously; a stutter off never ratchets) |
 | B | fewer pulses, wrapping back to all |
 | X | rotate |
 | Y | a new random pattern |
 | hold L2 + up / down | steps |
 | hold L2 + left / right | rate: jump between 1/4, 1/8, 1/16 and 1/32 (right = faster; every rate is on the RHYTHM page) |
-| hold L2 + Y / X | gate length shorter / longer |
+| hold L2 + Y / X | gate length shorter / longer (a stutter: fewer / more ratchets) |
+| hold L2 + B | a stutter's mode: repeat, reverse, random |
 | hold L2 + A | start / stop the rhythms (stopped, voices with a rhythm on are quiet; start begins on the downbeat) |
 | tap L2 | grab a fresh slice for the selected voice (both voices when the cross rhythm is selected) |
 | hold R2 + D-pad | up/down: filter brighter / darker; left/right: morph toward A / B |

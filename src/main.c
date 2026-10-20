@@ -968,15 +968,69 @@ static void draw_spectrum(void)
     }
 }
 
+/* centred text with a dark outline, so it reads over a busy waveform */
+static void text_halo(int cx, int y, const char *s, Uint32 col)
+{
+    for (int dy = -2; dy <= 2; dy++)
+        for (int dx = -2; dx <= 2; dx++)
+            if (dx || dy) text_center(cx + dx, y + dy, s, C_PANEL, 0);
+    text_center(cx, y, s, col, 0);
+}
+
 /* PLAY layout: two voices with the cross stage between them, each wearing its rhythm as a ring of steps */
-#define VOICE_Y 132
-#define VOICE_R 88
+#define VOICE_Y 118
+#define VOICE_R 80
 #define VOICE_AX 108
 #define VOICE_BX 532
-#define CENTRE_R 76
+#define CENTRE_R 68
+#define STUT_Y 256          /* the stutter rings, under the voices */
+#define STUT_R 30
 
-static const char *seq_name(int q) { return q == SEQ_X ? "cross" : q == SEQ_B ? "B" : "A"; }
-static Uint32 seq_col(int q) { return q == SEQ_X ? C_TEXT : osc_col(q); }
+static const char *seq_name(int q)
+{
+    static const char *const names[SEQ_COUNT] = {"A", "B", "cross", "A stutter", "B stutter"};
+    return names[q];
+}
+static Uint32 seq_col(int q) { return q == SEQ_X ? C_TEXT : osc_col(SEQ_VOICE(q)); }
+
+/* a stutter rhythm, drawn geometrically: its pulses joined into a polygon, which lights up when a step ratchets */
+static void draw_stut_ring(int o, int cx, int cy, int r)
+{
+    const float *p = synth_params(syn);
+    int q = SEQ_SA + o;
+    Uint32 col = osc_col(o);
+    int on = (int)p[STUT_PARAM(o, 0)], steps = (int)p[STUT_PARAM(o, 1)];
+    int pulses = (int)p[STUT_PARAM(o, 2)], rot = (int)p[STUT_PARAM(o, 3)];
+    float fl = on ? synth_seq_flash(syn, q) : 0;
+    Uint32 cc = on ? col : mix_col(C_PANEL2, col, 0.3f);
+    disc(cx, cy, r + 6, C_PANEL);
+    if (ui.cell == q) { circle(cx, cy, r + 10, col); circle(cx, cy, r + 11, col); }
+    int px_[16], py_[16], k = 0;
+    for (int i = 0; i < steps; i++)
+        if (euclid_hit(steps, pulses, rot, i)) polar(cx, cy, r, (float)i / steps, &px_[k], &py_[k]), k++;
+    Uint32 lc = mix_col(on ? mix_col(C_PANEL2, col, 0.55f) : C_PANEL2, C_TEXT, fl);
+    if (k == 1) line(cx, cy, px_[0], py_[0], lc);
+    for (int i = 0; k > 1 && i < k; i++) {
+        line(px_[i], py_[i], px_[(i + 1) % k], py_[(i + 1) % k], lc);
+        if (fl > 0.05f) line(px_[i] + 1, py_[i], px_[(i + 1) % k] + 1, py_[(i + 1) % k], lc); /* a flash thickens it */
+    }
+    int cur = synth_seq_step(syn, q);
+    for (int i = 0; i < steps; i++) {
+        int dx, dy;
+        polar(cx, cy, r, (float)i / steps, &dx, &dy);
+        int hit = euclid_hit(steps, pulses, rot, i), now = i == cur && on;
+        if (hit) { disc(dx, dy, 5, C_BG); disc(dx, dy, now ? 4 + (int)(fl * 2) : 3, now ? mix_col(cc, C_TEXT, fl) : cc); }
+        else disc(dx, dy, 1, mix_col(C_PANEL2, C_DIM, 0.4f));
+        if (now) circle(dx, dy, 6, C_TEXT);
+    }
+    char t[8];
+    static const char *const mk[] = {"", "<", "?"};
+    if (on) snprintf(t, sizeof t, "x%d%s", (int)p[P_A_STUT_RATCHET + o * OSC_STRIDE], mk[(int)p[P_A_STUT_MODE + o * OSC_STRIDE]]);
+    else snprintf(t, sizeof t, "off");
+    int lx = o ? cx - r - 34 : cx + r + 34; /* beside the ring, toward the middle, so the shape stays clear */
+    text_halo(lx, cy - 18, "stut", on ? C_DIM : C_PANEL2);
+    text_halo(lx, cy, t, on ? (fl > 0.3f ? C_TEXT : C_DIM) : C_PANEL2);
+}
 
 /* a rhythm, hi5 style: its steps around a circle, pulses lit, a white ring on the current step */
 static void draw_seq_ring(int q, int cx, int cy, float r)
@@ -1013,15 +1067,6 @@ static void seq_label(int q, char *t, int n)
 }
 
 static void seq_rate_label(int q, char *t, int n) { param_format_ctx(SEQ_SHAPE(q, RATE), synth_params(syn), t, n); }
-
-/* centred text with a dark outline, so it reads over a busy waveform */
-static void text_halo(int cx, int y, const char *s, Uint32 col)
-{
-    for (int dy = -2; dy <= 2; dy++)
-        for (int dx = -2; dx <= 2; dx++)
-            if (dx || dy) text_center(cx + dx, y + dy, s, C_PANEL, 0);
-    text_center(cx, y, s, col, 0);
-}
 
 /* A waveform wrapped around a circle, like a polar oscilloscope: the line swings out and in with the signal.
  * It is triggered on a rising zero crossing so it holds still on a steady tone, and scaled to its own recent
@@ -1208,11 +1253,12 @@ static void draw_play(void)
     draw_centre(320, VOICE_Y);
     for (int o = 0; o < 2; o++) {
         int cx = o ? VOICE_BX : VOICE_AX;
-        draw_voice_dots(cx, VOICE_Y + VOICE_R + 16, o);
-        text_center(cx, VOICE_Y + VOICE_R + 30, osc_station_name(o), C_TEXT, 19);
+        draw_voice_dots(cx, VOICE_Y + VOICE_R + 12, o);
+        draw_stut_ring(o, cx, STUT_Y, STUT_R);
+        text_center(cx, STUT_Y + STUT_R + 14, osc_station_name(o), C_TEXT, 19);
         char line_[256];
         osc_status_line(o, line_, sizeof line_);
-        text_center(cx, VOICE_Y + VOICE_R + 48, line_, C_DIM, 19);
+        text_center(cx, STUT_Y + STUT_R + 31, line_, C_DIM, 19);
     }
     if (SDL_GetTicks() < ui.grab_flash)
         for (int o = 0; o < 2; o++)
@@ -1225,12 +1271,14 @@ static void draw_play(void)
         if (ui.held[B_Y] || ui.held[B_A]) hl = 4;
         if (ui.held[B_LEFT] || ui.held[B_RIGHT]) hl = 0;
     }
-    draw_stages(72, 386, 124, 16, 34, hl, 1);
+    draw_stages(72, 394, 124, 14, 28, hl, 1);
 
+    int stut = ui.cell >= SEQ_SA;
     const char *hint = ui.held[B_R2] ? "dpad: filter / morph   X B: fold   Y A: space" :
-                       ui.held[B_L2] ? "^v steps  <> rate  Y X length  A start/stop" :
-                                       "<> rhythm  ^v pulses  A on  B fewer  X rotate  Y new";
-    text_center(320, 322, hint, C_DIM, 0);
+                       ui.held[B_L2] ? (stut ? "^v steps  <> rate  Y X ratchets  B mode  A start/stop" :
+                                               "^v steps  <> rate  Y X length  A start/stop") :
+                                       "<> rhythm  ^v pulses  A on/off  B fewer  X rotate  Y new";
+    text_center(320, 344, hint, C_DIM, 0);
     text(16, 455, "L1/R1 pitch  L2 grab  SELECT tap  START edit  MENU x2 quit", C_PANEL2, 0);
 }
 
@@ -1314,7 +1362,7 @@ static void draw_param_row(int id, int x, int y, int knob_x, int val_x, int val_
     }
     param_format_ctx(id, p, val, sizeof val);
     Uint32 kc = selected ? C_LEAF : C_DIM;
-    if (id >= P_A_STATION && id <= P_B_CHANCE) kc = selected ? osc_col(id >= P_B_STATION) : C_DIM;
+    if (id >= P_A_STATION && id <= P_B_STUT_CHANCE) kc = selected ? osc_col(id >= P_B_STATION) : C_DIM;
     if (pi->choices) {
         int n = (int)pi->max + 1, v = (int)p[id];
         circle(knob_x, ky, 8, C_PANEL2); /* choices: a dot orbiting to its position */
@@ -1554,7 +1602,7 @@ static void do_grab(int osc)
 }
 
 /* PLAY: the selected rhythm's voice, or both when the cross rhythm is selected */
-static int play_voice(void) { return ui.cell == SEQ_X ? -1 : ui.cell; }
+static int play_voice(void) { return ui.cell == SEQ_X ? -1 : SEQ_VOICE(ui.cell); }
 
 static void hop(int o)
 {
@@ -1604,6 +1652,15 @@ static void cell_say(int q)
     const float *p = synth_params(syn);
     char rate[24];
     param_format_ctx(SEQ_SHAPE(q, RATE), p, rate, sizeof rate);
+    if (q >= SEQ_SA) {
+        int o = q - SEQ_SA;
+        char mode[16];
+        param_format_ctx(P_A_STUT_MODE + o * OSC_STRIDE, p, mode, sizeof mode);
+        if (!(int)p[SEQ_PARAM(q, 0)]) toast("%s off", seq_name(q));
+        else toast("%s  E(%d,%d) >%d  x%d %s", seq_name(q), (int)p[SEQ_PARAM(q, 2)], (int)p[SEQ_PARAM(q, 1)],
+                   (int)p[SEQ_PARAM(q, 3)], (int)p[P_A_STUT_RATCHET + o * OSC_STRIDE], mode);
+        return;
+    }
     if (!(int)p[SEQ_PARAM(q, 0)]) toast(q == SEQ_X ? "cross rhythm off (cross always on)" : "%s rhythm off (always open)", seq_name(q));
     else toast("%s  E(%d,%d) >%d  %s", seq_name(q), (int)p[SEQ_PARAM(q, 2)], (int)p[SEQ_PARAM(q, 1)],
                (int)p[SEQ_PARAM(q, 3)], rate);
@@ -1619,7 +1676,7 @@ static void cell_fix(int q)
 
 static void cell_button(int b)
 {
-    static const int order[SEQ_COUNT] = {SEQ_A, SEQ_X, SEQ_B}; /* left to right on screen */
+    static const int order[SEQ_COUNT] = {SEQ_A, SEQ_SA, SEQ_X, SEQ_SB, SEQ_B}; /* left to right on screen */
     int q = ui.cell;
     int on = SEQ_PARAM(q, 0), steps = SEQ_PARAM(q, 1), pulses = SEQ_PARAM(q, 2), rot = SEQ_PARAM(q, 3);
     int st = (int)synth_get_param(syn, steps);
@@ -1634,6 +1691,16 @@ static void cell_button(int b)
             synth_set_param(syn, r, (float)next);
         }
         if (b == B_A) { transport_toggle(); return; }
+        if (q >= SEQ_SA && (b == B_X || b == B_Y || b == B_B)) { /* stutter: ratchets and mode */
+            int o = q - SEQ_SA;
+            int id = b == B_B ? P_A_STUT_MODE + o * OSC_STRIDE : P_A_STUT_RATCHET + o * OSC_STRIDE;
+            if (b == B_B) synth_set_param(syn, id, param_adjust(id, synth_get_param(syn, id), 1, 0));
+            else synth_set_param(syn, id, synth_get_param(syn, id) + (b == B_X ? 1 : -1));
+            synth_set_param(syn, on, 1);
+            cell_say(q);
+            ui.dirty_settings = 1;
+            return;
+        }
         if (b == B_X || b == B_Y) {
             int l = SEQ_SHAPE(q, LENGTH);
             synth_set_param(syn, l, synth_get_param(syn, l) + (b == B_X ? 0.05f : -0.05f));
@@ -1661,7 +1728,7 @@ static void cell_button(int b)
         case B_X: synth_set_param(syn, rot, (float)(((int)synth_get_param(syn, rot) + 1) % st)); break;
         case B_Y: { /* a new random Euclidean pattern */
             static const int lens[] = {5, 6, 7, 8, 9, 10, 11, 12, 13, 16, 16, 16};
-            int n = lens[rand() % 12], kmax = n * 2 / 3 > 1 ? n * 2 / 3 : 1;
+            int n = lens[rand() % 12], kmax = q >= SEQ_SA ? (n / 3 > 1 ? n / 3 : 1) : (n * 2 / 3 > 1 ? n * 2 / 3 : 1);
             synth_set_param(syn, steps, (float)n);
             synth_set_param(syn, pulses, (float)(1 + rand() % kmax));
             synth_set_param(syn, rot, (float)(rand() % n));
@@ -1702,7 +1769,7 @@ static int edit_voice(void)
     int rows[256];
     const char *hdrs[256];
     int n = build_rows(ui.tab, rows, hdrs), sel = ui.sel[ui.tab];
-    if (sel < 0 || sel >= n || rows[sel] < P_A_STATION || rows[sel] > P_B_CHANCE) return -1;
+    if (sel < 0 || sel >= n || rows[sel] < P_A_STATION || rows[sel] > P_B_STUT_CHANCE) return -1;
     return rows[sel] >= P_B_STATION;
 }
 
