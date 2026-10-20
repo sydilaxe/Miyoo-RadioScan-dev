@@ -62,7 +62,9 @@ The PLAY page is for performing: the two rhythms and the sound, live.
   and its colour shows which voice dominates it: leaf green for A, amber for B.
 - **Converse.** The voice holding the floor gets a bright ring.
 - **Centre.** The final sound, with the cross rhythm around it. The dot travelling over the top shows the morph
-  position, from A on the left to B on the right.
+  position, from A on the left to B on the right. Underneath, each active cross effect is spelled out (like
+  *A talks thru B*, *morph 40% to B*, *B bends A pitch*, *A talks, B waits*), with a bar showing its set amount
+  and, brighter, how much of it the cross rhythm and the MIX return let through right now.
 - **Five circles along the bottom:** *cross → filter → fold → echo → space*. Each grows the more it changes
   the sound.
 - **Abstract forms.** Every form is driven by the sound, not drawn as a waveform:
@@ -108,6 +110,7 @@ ring is outlined, and every change shows its pattern briefly, like `A  E(5,8) >2
 | hold L2 + up / down | steps |
 | hold L2 + left / right | rate (right = faster) |
 | hold L2 + Y / X | gate length shorter / longer |
+| hold L2 + A | start / stop the rhythms (stopped, voices with a rhythm on are quiet; start begins on the downbeat) |
 | tap L2 | grab a fresh slice for the selected voice (both voices when the cross rhythm is selected) |
 | hold R2 + D-pad | up/down: filter brighter / darker; left/right: morph toward A / B |
 | hold R2 + X / B | fold more / less |

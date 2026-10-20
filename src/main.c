@@ -770,10 +770,15 @@ static void draw_toast(void)
 static void draw_beat(int x, int y)
 {
     float ph = synth_beat_phase(syn);
-    disc(x, y + 8, 6, ph < 0.15f ? C_TEXT : C_PANEL2);
     char b[24];
-    snprintf(b, sizeof b, "%.0f bpm", synth_get_param(syn, P_BPM));
-    text(x + 14, y, b, C_DIM, 0);
+    if (synth_running(syn)) {
+        disc(x, y + 8, 6, ph < 0.15f ? C_TEXT : C_PANEL2);
+        snprintf(b, sizeof b, "%.0f bpm", synth_get_param(syn, P_BPM));
+    } else { /* stopped: a square, as on a transport */
+        fill(x - 5, y + 3, 11, 11, C_RUST);
+        snprintf(b, sizeof b, "stopped");
+    }
+    text(x + 14, y, b, synth_running(syn) ? C_DIM : C_RUST, 0);
     if (sc_mode() != SYNC_OFF) { /* Wi-Fi sync: ring = searching, filled = linked */
         const SyncStatus *ss = sync_status();
         const char *t = ss->leading ? "lead" : ss->following ? "follow" : "sync";
@@ -1055,34 +1060,64 @@ static void draw_stages(int x0, int y, int spacing, float rmin, float rmax, int 
     }
 }
 
-/* centre: the final sound with the cross rhythm around it, and the morph position travelling over the top
- * from A (left) to B (right) */
+/* centre: the final sound with the cross rhythm around it, the morph position travelling over the top from
+ * A (left) to B (right), and underneath, in words, what the cross stage is doing to the sound right now */
 static void draw_centre(int cx, int cy)
 {
     const float *p = synth_params(syn);
     int on = (int)p[P_X_GATE_ON];
+    float open = synth_cross_gate(syn) * fminf(p[P_CROSS_LEVEL], 1.0f); /* the cross rhythm and the MIX return */
+    float amount = synth_cross_amount(syn);
     disc(cx, cy, CENTRE_R, C_PANEL);
-    circle(cx, cy, CENTRE_R, mix_col(C_PANEL2, C_TEXT, on ? synth_cross_gate(syn) * synth_cross_amount(syn) : 0));
+    circle(cx, cy, CENTRE_R, mix_col(C_PANEL2, C_TEXT, amount * open));
     draw_bloom(cx, cy, 12, CENTRE_R - 16, CENTRE_R + 20, TAP_OUT, C_TEXT, 0);
     draw_seq_ring(SEQ_X, cx, cy, CENTRE_R - 7);
+    text_center(cx, cy - 20, "cross", amount > 0.01f ? C_TEXT : C_DIM, 0);
+    char t[16];
+    seq_label(SEQ_X, t, sizeof t);
+    text_center(cx, cy + 12, t, on ? C_DIM : C_PANEL2, 0);
+
     float m = p[P_MORPH];
     int ar = CENTRE_R + 20;
     arc(cx, cy, ar, 2, 0.75f, 1.25f, C_PANEL2);
     int mx, my;
     polar(cx, cy, ar, 0.75f + 0.5f * m, &mx, &my);
     disc(mx, my, m > 0.01f ? 6 : 4, m > 0.01f ? mix_col(C_LEAF, C_AMBER, m) : C_PANEL2);
-    char b[48] = "";
+
+    /* one line per active effect: a bar for how much it is applied now, and what it does */
+    struct { float amt, now; Uint32 col; char what[24]; } fx[5];
+    int n = 0;
     int voc = (int)p[P_VOCODE];
-    if (voc) snprintf(b, sizeof b, "vocode %s", voc == VOC_A_TO_B ? "A>B" : "B>A");
-    else if (p[P_FM] > 0.01f) snprintf(b, sizeof b, "fm %s", (int)p[P_FM_DIR] == FM_B_TO_A ? "B>A" : "A>B");
-    else if (p[P_RING] > 0.01f) snprintf(b, sizeof b, "ring");
-    else if (m > 0.01f) snprintf(b, sizeof b, "morph");
-    else if (p[P_CONVERSE] > 0.01f) snprintf(b, sizeof b, "converse");
-    else snprintf(b, sizeof b, "no cross");
-    char t[16];
-    seq_label(SEQ_X, t, sizeof t);
-    text_center(cx, cy + CENTRE_R + 10, b, b[0] == 'n' ? C_PANEL2 : C_DIM, 0);
-    if (on || ui.cell == SEQ_X) text_center(cx, cy + CENTRE_R + 28, t, on ? C_DIM : C_PANEL2, 0);
+    if (voc && p[P_VOCODE_AMT] > 0.01f) {
+        fx[n].amt = p[P_VOCODE_AMT]; fx[n].now = fx[n].amt * open; fx[n].col = voc == VOC_A_TO_B ? C_LEAF : C_AMBER;
+        snprintf(fx[n++].what, sizeof fx[0].what, voc == VOC_A_TO_B ? "A talks thru B" : "B talks thru A");
+    }
+    if (p[P_MORPH] > 0.01f) {
+        fx[n].amt = p[P_MORPH]; fx[n].now = fx[n].amt * open; fx[n].col = mix_col(C_LEAF, C_AMBER, m);
+        snprintf(fx[n++].what, sizeof fx[0].what, "morph %.0f%% to B", m * 100);
+    }
+    if (p[P_FM] > 0.01f) {
+        int ab = (int)p[P_FM_DIR] == FM_A_TO_B;
+        fx[n].amt = p[P_FM]; fx[n].now = fx[n].amt * synth_cross_gate(syn); fx[n].col = ab ? C_LEAF : C_AMBER;
+        snprintf(fx[n++].what, sizeof fx[0].what, ab ? "A bends B pitch" : "B bends A pitch");
+    }
+    if (p[P_RING] > 0.01f) {
+        fx[n].amt = p[P_RING]; fx[n].now = fx[n].amt * open; fx[n].col = C_TEXT;
+        snprintf(fx[n++].what, sizeof fx[0].what, "ring A x B");
+    }
+    if (p[P_CONVERSE] > 0.01f) {
+        int f = synth_floor(syn);
+        fx[n].amt = p[P_CONVERSE]; fx[n].now = fx[n].amt; fx[n].col = f == 1 ? C_AMBER : C_LEAF;
+        snprintf(fx[n++].what, sizeof fx[0].what, "%c talks, %c waits", f == 1 ? 'B' : 'A', f == 1 ? 'A' : 'B');
+    }
+    int y = cy + CENTRE_R + 12, bx = cx - 92;
+    if (n == 0) { text_center(cx, y, "no cross-mod", C_PANEL2, 0); return; }
+    for (int i = 0; i < n && i < 4; i++, y += 20) {
+        fill(bx, y + 6, 36, 6, C_PANEL);
+        fill(bx, y + 6, (int)(36 * fminf(fx[i].amt, 1.0f)), 6, mix_col(C_PANEL, fx[i].col, 0.35f)); /* set */
+        fill(bx, y + 6, (int)(36 * fminf(fx[i].now, 1.0f)), 6, fx[i].col);                          /* now */
+        text(bx + 44, y, fx[i].what, fx[i].now > 0.02f ? C_TEXT : C_DIM, 15);
+    }
 }
 
 static void draw_play(void)
@@ -1120,7 +1155,7 @@ static void draw_play(void)
     draw_stages(72, 386, 124, 16, 34, hl, 1);
 
     const char *hint = ui.held[B_R2] ? "dpad: filter / morph   X B: fold   Y A: space" :
-                       ui.held[B_L2] ? "^v steps  <> rate  Y X length" :
+                       ui.held[B_L2] ? "^v steps  <> rate  Y X length  A start/stop" :
                                        "<> rhythm  ^v pulses  A on  B fewer  X rotate  Y new";
     text_center(320, 322, hint, C_DIM, 0);
     text(16, 455, "L1/R1 pitch  L2 grab  SELECT tap  START edit  MENU x2 quit", C_PANEL2, 0);
@@ -1479,6 +1514,18 @@ static void adjust_param(int id, int dir)
 
 /* ---- rhythm cells on the PLAY page, played like hi5's pattern grid ---- */
 
+/* start / stop the rhythms; starting begins again from the downbeat */
+static void transport_toggle(void)
+{
+    if (sync_status()->following) { toast("the lead unit starts and stops the rhythms"); return; }
+    SDL_LockAudio();
+    int run = !synth_running(syn);
+    if (run) synth_tap_reset(syn);
+    synth_set_running(syn, run);
+    SDL_UnlockAudio();
+    toast(run ? "rhythms playing" : "rhythms stopped (voices with a rhythm are quiet)");
+}
+
 static void cell_say(int q)
 {
     const float *p = synth_params(syn);
@@ -1510,6 +1557,7 @@ static void cell_button(int b)
             int r = SEQ_SHAPE(q, RATE); /* right = faster = a shorter note value */
             synth_set_param(syn, r, synth_get_param(syn, r) + (b == B_RIGHT ? -1 : 1));
         }
+        if (b == B_A) { transport_toggle(); return; }
         if (b == B_X || b == B_Y) {
             int l = SEQ_SHAPE(q, LENGTH);
             synth_set_param(syn, l, synth_get_param(syn, l) + (b == B_X ? 0.05f : -0.05f));

@@ -877,7 +877,7 @@ static float euclid_gate(Synth *s, int q, double beat, long *step_abs, int *idx,
         if (*hit) { *flash = 1; *new_hit = 1; }
     }
     if (!on) return 1.0f;
-    if (!*hit) return 0.0f;
+    if (!s->running || !*hit) return 0.0f; /* stopped: a rhythm that is on stays closed */
     float t = (float)(sp - step), len = p[SEQ_SHAPE(q, LENGTH)];
     float att = p[SEQ_SHAPE(q, ATTACK)] * len, min_att = 0.004f / step_s; /* never faster than 4 ms */
     if (att < min_att) att = min_att;
