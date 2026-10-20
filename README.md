@@ -269,6 +269,11 @@ Every change that could jump is smoothed over a few milliseconds: rhythm gates c
 LOOP restarts from silence), stutter ratchets and the return from a stutter fade, scatter crossfades in from the
 live sound, levels and mutes glide, and a station fades in and out when it starts, changes or runs dry.
 
+Settings are saved a few seconds after you stop changing them, in the background, so writing to the SD card never
+interrupts the sound. If you still hear dropouts, `log.txt` notes any late audio buffers (how late, and how long the
+synth took), which tells a slow card or a busy CPU apart from a sound problem; raising `RS_BUFFER` to 2048 in
+`launch.sh` gives more headroom.
+
 ## Limitations
 
 - MP3 streams only. AAC, Ogg/Opus and HLS (`.m3u8`) stations are skipped or reported as unsupported. The

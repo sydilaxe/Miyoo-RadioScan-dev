@@ -11,6 +11,7 @@
 #include <limits.h>
 #include <math.h>
 #include <pthread.h>
+#include <sched.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -129,11 +130,39 @@ static void enable_flush_to_zero(void)
 #endif
 }
 
+/* Audio timing, for log.txt: a callback that comes much later than its buffer lasts means the sound dropped out
+ * (a pop). Written by the audio thread, read and reported by the main thread. */
+static volatile unsigned aud_late, aud_calls;
+static volatile float aud_worst_gap_ms, aud_worst_run_ms;
+
+static double mono_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1000.0 + ts.tv_nsec / 1e6;
+}
+
 static void audio_cb(void *ud, Uint8 *stream, int len)
 {
     (void)ud;
     static __thread int ftz;
-    if (!ftz) { enable_flush_to_zero(); ftz = 1; }
+    if (!ftz) {
+        enable_flush_to_zero();
+        /* real-time priority, so a busy moment elsewhere (an SD card write, drawing) can't starve the sound;
+         * the Miyoo runs apps as root, and where it isn't allowed nothing changes */
+        struct sched_param sp = {.sched_priority = 50};
+        pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp);
+        ftz = 1;
+    }
+    static double last_start;
+    double t0 = mono_ms(), buf_ms = len / 4 * 1000.0 / audio_rate;
+    if (last_start > 0 && aud_calls > 20) { /* skip start-up */
+        float gap = (float)(t0 - last_start);
+        if (gap > buf_ms * 1.6) aud_late++;
+        if (gap > aud_worst_gap_ms) aud_worst_gap_ms = gap;
+    }
+    last_start = t0;
+    aud_calls++;
     int16_t *out = (int16_t *)stream;
     int frames = len / 4;
     while (frames > 0) {
@@ -148,6 +177,23 @@ static void audio_cb(void *ud, Uint8 *stream, int len)
         }
         out += n * 2;
         frames -= n;
+    }
+    float run = (float)(mono_ms() - t0);
+    if (run > aud_worst_run_ms) aud_worst_run_ms = run;
+}
+
+/* every 10 s, if the audio ran late, say so in log.txt (with how late, and how long the synth itself took) */
+static void audio_report(Uint32 now)
+{
+    static Uint32 last;
+    static unsigned reported;
+    if (now - last < 10000) return;
+    last = now;
+    if (aud_late != reported) {
+        fprintf(stderr, "audio: %u late buffers so far (worst gap %.1f ms, slowest synth run %.1f ms)\n", aud_late,
+                aud_worst_gap_ms, aud_worst_run_ms);
+        reported = aud_late;
+        aud_worst_gap_ms = aud_worst_run_ms = 0;
     }
 }
 
@@ -312,22 +358,49 @@ static void toast(const char *fmt, ...)
 #define SETTINGS_VERSION 3
 static int settings_were_reset;
 
-static void save_settings(void)
+/* The settings text is built on the main thread and written by a short-lived background thread, so a slow SD card
+ * never holds up the screen, the buttons or (through them) the audio. */
+static char save_buf[64 * 1024];
+static volatile int save_busy;
+
+static void *save_thread(void *arg)
 {
+    (void)arg;
     char tmp[PATH_MAX + 32];
     snprintf(tmp, sizeof tmp, "%s.tmp", settings_path);
     FILE *f = fopen(tmp, "w");
-    if (!f) return;
-    fprintf(f, "version=%d\n", SETTINGS_VERSION);
-    for (int i = 0; i < P_COUNT; i++) fprintf(f, "%s=%g\n", param_info[i].key, synth_get_param(syn, i));
-    for (int o = 0; o < 2; o++) {
-        int idx = (int)synth_get_param(syn, P_A_STATION + o * OSC_STRIDE);
-        if (idx >= 0 && idx < stations.count) fprintf(f, "%c_url=%s\n", 'a' + o, stations.items[idx].url);
+    if (f) {
+        fputs(save_buf, f);
+        fclose(f);
+        rename(tmp, settings_path);
     }
-    fprintf(f, "octave=%d\n", ui.octave);
-    fclose(f);
-    rename(tmp, settings_path);
+    save_busy = 0;
+    return NULL;
+}
+
+/* background = 0 writes now (on quit) */
+static void save_settings_ex(int background)
+{
+    if (save_busy) return; /* the previous save is still writing: try again later */
+    int n = 0, cap = (int)sizeof save_buf;
+    n += snprintf(save_buf + n, cap - n, "version=%d\n", SETTINGS_VERSION);
+    for (int i = 0; i < P_COUNT && n < cap; i++) n += snprintf(save_buf + n, cap - n, "%s=%g\n", param_info[i].key, synth_get_param(syn, i));
+    for (int o = 0; o < 2 && n < cap; o++) {
+        int idx = (int)synth_get_param(syn, P_A_STATION + o * OSC_STRIDE);
+        if (idx >= 0 && idx < stations.count) n += snprintf(save_buf + n, cap - n, "%c_url=%s\n", 'a' + o, stations.items[idx].url);
+    }
+    if (n < cap) snprintf(save_buf + n, cap - n, "octave=%d\n", ui.octave);
     ui.dirty_settings = 0;
+    save_busy = 1;
+    pthread_t t;
+    if (background && pthread_create(&t, NULL, save_thread, NULL) == 0) pthread_detach(t);
+    else save_thread(NULL);
+}
+
+static void save_settings(void) /* now, on this thread (on quit): after any save still writing */
+{
+    while (save_busy) SDL_Delay(5);
+    save_settings_ex(0);
 }
 
 
@@ -1969,8 +2042,16 @@ static void logic_update(Uint32 now)
         ui.scan_results = scan_tmp;
         ui.scan_sel = ui.scan_scroll = 0;
     }
-    static Uint32 last_save;
-    if (ui.dirty_settings && now - last_save > 5000) { save_settings(); last_save = now; }
+    /* save once the settings have stopped changing for a few seconds, so tweaking doesn't keep writing to the card */
+    static Uint32 last_change;
+    static unsigned last_hash;
+    unsigned h = 2166136261u;
+    const float *p = synth_params(syn);
+    for (int i = 0; i < P_COUNT; i++) { unsigned v; memcpy(&v, &p[i], sizeof v); h = (h ^ v) * 16777619u; }
+    h = (h ^ (unsigned)ui.octave) * 16777619u;
+    if (h != last_hash) { last_hash = h; last_change = now; }
+    if (ui.dirty_settings && now - last_change > 4000) save_settings_ex(1);
+    audio_report(now);
 }
 
 /* ================================================================== presentation */
