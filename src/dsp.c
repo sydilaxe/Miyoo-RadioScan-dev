@@ -34,7 +34,7 @@ int euclid_hit(int steps, int pulses, int rotate, int step)
     return (j * pulses) % steps < pulses;
 }
 
-#define VOICE_PARAMS(X, x, mode, size, tex, lvl, steps, pulses, length)                                     \
+#define VOICE_PARAMS(X, x, mode, size, tex, lvl, pan, steps, pulses, length)                                \
     [P_##X##_STATION] = {x "_station", "Station", PAGE_VOICES, -1, 511, -1, 1, 0, "station", NULL},              \
     [P_##X##_MODE] = {x "_engine", "Engine", PAGE_VOICES, 0, 3, mode, 1, 0, "", osc_modes},                      \
     [P_##X##_TUNE] = {x "_tune", "Pitch", PAGE_VOICES, -24, 24, 0, 1, 0, "st", NULL},                            \
@@ -42,6 +42,7 @@ int euclid_hit(int steps, int pulses, int rotate, int step)
     [P_##X##_TEXTURE] = {x "_texture", "Texture", PAGE_VOICES, 0, 1, tex, 0.02f, 0, "", NULL},                   \
     [P_##X##_FOCUS] = {x "_focus", "Focus", PAGE_VOICES, 0, 2, 0, 1, 0, "", focuses},                            \
     [P_##X##_LEVEL] = {x "_level", "Level", PAGE_VOICES, 0, 1, lvl, 0.02f, 0, "", NULL},                         \
+    [P_##X##_PAN] = {x "_pan", "Pan", PAGE_VOICES, -1, 1, pan, 0.05f, 0, "pan", NULL},                           \
     [P_##X##_OSC] = {x "_osc", "Oscillator", PAGE_VOICES, 0, 4, 0, 1, 0, "", osc_waves},                         \
     [P_##X##_OSC_MIX] = {x "_osc_mix", "Osc Mix", PAGE_VOICES, 0, 1, 0, 0.02f, 0, "", NULL},                     \
     [P_##X##_RHYTHM] = {x "_rhythm", "Rhythm", PAGE_RHYTHM, 0, 1, 1, 1, 0, "", offon},                           \
@@ -54,8 +55,8 @@ int euclid_hit(int steps, int pulses, int rotate, int step)
 
 const ParamInfo param_info[P_COUNT] = {
     /* A plays the radio as it is, pulsing gently; B slices it into a five-against-eight rhythm. */
-    VOICE_PARAMS(A, "a", OSC_LIVE, 250, 0.0f, 1.0f, 8, 5, 0.85f),
-    VOICE_PARAMS(B, "b", OSC_LOOP, 300, 0.35f, 0.85f, 5, 3, 0.5f),
+    VOICE_PARAMS(A, "a", OSC_LIVE, 250, 0.0f, 1.0f, -0.25f, 8, 5, 0.85f),
+    VOICE_PARAMS(B, "b", OSC_LOOP, 300, 0.35f, 0.85f, 0.25f, 5, 3, 0.5f),
 
     [P_BPM]    = {"bpm", "Tempo (SELECT)", PAGE_RHYTHM, 20, 300, 80, 1, 0, "bpm", NULL},
     [P_SYNC]   = {"sync", "Wi-Fi Sync", PAGE_RHYTHM, 0, 3, 1, 1, 0, "", sync_modes},
@@ -65,6 +66,7 @@ const ParamInfo param_info[P_COUNT] = {
     [P_FM_DIR]     = {"fm_dir", "FM Direction", PAGE_ENGINE, 0, 1, 0, 1, 0, "", fm_dirs},
     [P_RING]       = {"ring", "Ring Mod", PAGE_ENGINE, 0, 1, 0, 0.05f, 0, "", NULL},
     [P_MORPH]      = {"morph", "Morph A>B", PAGE_ENGINE, 0, 1, 0, 0.04f, 0, "morph", NULL},
+    [P_CONVERSE]   = {"converse", "Converse", PAGE_ENGINE, 0, 1, 0, 0.05f, 0, "", NULL},
     [P_ROOT]   = {"root", "Pitch Root", PAGE_ENGINE, 0, 11, 0, 1, 0, "", roots},
     [P_TONE]   = {"tone", "Filter", PAGE_ENGINE, -1, 1, 0, 0.04f, 0, "tone", NULL},
     [P_RESO]   = {"reso", "Resonance", PAGE_ENGINE, 0, 1, 0.2f, 0.05f, 0, "", NULL},
@@ -85,7 +87,7 @@ const char *param_section(int id)
         return o ? "VOICE B" : "VOICE A";
     }
     if (id <= P_SYNC) return "CLOCK";
-    if (id <= P_MORPH) return "CROSS";
+    if (id <= P_CONVERSE) return "CROSS";
     if (id <= P_ROOT) return "KEY";
     if (id <= P_FOLD) return "SHAPE";
     if (id <= P_SPACE) return "SPACE";
@@ -176,6 +178,9 @@ void param_format_ctx(int id, const float *params, char *buf, int n)
     } else if (!strcmp(p->unit, "morph")) {
         if (v < 0.01f) snprintf(buf, n, "off");
         else snprintf(buf, n, "%.0f%% A / %.0f%% B", (1 - v) * 100, v * 100);
+    } else if (!strcmp(p->unit, "pan")) {
+        if (fabsf(v) < 0.01f) snprintf(buf, n, "centre");
+        else snprintf(buf, n, "%s %.0f%%", v < 0 ? "left" : "right", fabsf(v) * 100);
     } else if (!strcmp(p->unit, "ms")) {
         snprintf(buf, n, v < 10 ? "%.1f ms" : "%.0f ms", v);
     } else if (!strcmp(p->unit, "dB")) {
@@ -242,6 +247,8 @@ typedef struct {
     float focus_gain;
     Vad vad;
     double osc_ph;        /* secondary oscillator */
+    float talk_hp, talk_lp, talk_env, talk_peak; /* converse: how much this voice is talking right now */
+    float duck;           /* converse gain */
     /* rhythm */
     long step_abs;
     int step_idx, hit;
@@ -277,6 +284,8 @@ struct Synth {
     double rev_mod;
 
     float lev_env, lev_gain;   /* output leveller */
+    int floor_holder;          /* converse: voice with the floor */
+    float floor_quiet;         /* seconds the holder has been quiet */
     float s_lvl[2], s_vol;
     float win[WIN_N + 1];
     float tap[TAP_COUNT][TAP_LEN];
@@ -316,6 +325,7 @@ Synth *synth_create(int sample_rate)
         os->last_mode = -1;
         os->focus_gain = 1;
         os->gate = 1;
+        os->duck = 1;
         os->step_abs = -1;
         os->vad.flen = sample_rate / 50; /* 20 ms frames */
         os->vad.speech = 0.5f;
@@ -369,6 +379,14 @@ float synth_speechness(const Synth *s, int o) { return s->osc[o].vad.speech; }
 int synth_voice_state(const Synth *s, int o) { return s->osc[o].vad.state; }
 float synth_osc_level(const Synth *s, int o) { return s->osc[o].level; }
 float synth_leveller_gain(const Synth *s) { return s->lev_gain; }
+int synth_floor(const Synth *s) { return s->p[P_CONVERSE] > 0.01f ? s->floor_holder : -1; }
+
+void synth_tap_read(const Synth *s, int tap, float *dst, int n)
+{
+    if (n > TAP_LEN) n = TAP_LEN;
+    unsigned start = s->tap_w - (unsigned)n;
+    for (int i = 0; i < n; i++) dst[i] = s->tap[tap][(start + i) & (TAP_LEN - 1)];
+}
 
 void synth_note_on(Synth *s, int note)
 {
@@ -426,6 +444,7 @@ static void dice_range(int id, float *lo, float *hi)
     case P_A_TUNE: *lo = -12; *hi = 12; break;
     case P_A_SIZE: *lo = 2; *hi = 600; break;
     case P_A_LEVEL: *lo = 0.6f; *hi = 1; break;
+    case P_A_PAN: *lo = -0.7f; *hi = 0.7f; break;
     case P_A_STEPS: *lo = 3; *hi = 16; break;
     case P_A_RATE: *lo = 1; *hi = 11; break;
     case P_A_LENGTH: *lo = 0.2f; *hi = 1; break;
@@ -439,6 +458,7 @@ static void dice_range(int id, float *lo, float *hi)
     case P_VOCODE_AMT: *lo = 0.4f; *hi = 1; break;
     case P_FM: *lo = 0; *hi = 0.35f; break;
     case P_RING: *lo = 0; *hi = 0.5f; break;
+    case P_CONVERSE: *lo = 0.5f; *hi = 1; break;
     }
 }
 
@@ -506,6 +526,7 @@ void synth_dice(Synth *s, int which)
         if (rnd01(s) < 0.6f) s->p[P_FM] = 0;
         if (rnd01(s) < 0.6f) s->p[P_RING] = 0;
         if (rnd01(s) < 0.6f) s->p[P_MORPH] = 0;
+        if (rnd01(s) < 0.7f) s->p[P_CONVERSE] = 0;
     }
     if (which == DICE_RHYTHM)
         for (int o = 0; o < 2; o++)
@@ -797,7 +818,13 @@ static float rhythm_eval(Synth *s, int idx, double beat)
 static const float rev_ms[REV_LINES] = {29.7f, 37.1f, 41.1f, 43.7f, 53.3f};
 static const float ap_ms[4] = {4.7f, 6.1f, 3.9f, 5.3f};
 
-static void reverb_tick(Synth *s, float inL, float inR, float *outL, float *outR, float size, float decay)
+static void reverb_gains(float size, float decay, float *g)
+{
+    float scale = 0.4f + size * 2.4f;
+    for (int i = 0; i < REV_LINES; i++) g[i] = powf(10.0f, -3.0f * rev_ms[i] * scale * 0.001f / decay);
+}
+
+static void reverb_tick(Synth *s, float inL, float inR, float *outL, float *outR, float size, const float *gains)
 {
     float x[2] = {inL, inR};
     for (int c = 0; c < 2; c++)
@@ -829,10 +856,8 @@ static void reverb_tick(Synth *s, float inL, float inR, float *outL, float *outR
         sum += d[i];
     }
     float hh = sum * (2.0f / REV_LINES);
-    for (int i = 0; i < REV_LINES; i++) {
-        float g = powf(10.0f, -3.0f * rev_ms[i] * scale * 0.001f / decay);
-        s->rev[i][s->rev_w & (REV_N - 1)] = ((i & 1) ? x[1] : x[0]) * 0.5f + (d[i] - hh) * g;
-    }
+    for (int i = 0; i < REV_LINES; i++)
+        s->rev[i][s->rev_w & (REV_N - 1)] = ((i & 1) ? x[1] : x[0]) * 0.5f + (d[i] - hh) * gains[i];
     s->rev_w++;
     *outL = 0.6f * (d[0] - d[1] + d[2] + 0.5f * d[4]);
     *outR = 0.6f * (d[3] - d[2] + d[1] - 0.5f * d[4]);
@@ -846,6 +871,7 @@ float synth_cross_amount(const Synth *s)
     if (s->p[P_FM] * 2 > a) a = s->p[P_FM] * 2;
     if (s->p[P_RING] > a) a = s->p[P_RING];
     if (s->p[P_MORPH] > 0.01f && 0.5f + 0.5f * s->p[P_MORPH] > a) a = 0.5f + 0.5f * s->p[P_MORPH];
+    if (s->p[P_CONVERSE] > a) a = s->p[P_CONVERSE];
     return a > 1 ? 1 : a;
 }
 
@@ -903,12 +929,37 @@ void synth_process(Synth *s, const float *inA, const float *inB, float *out, int
         float dtarget = 0.75f * 60.0f / s->p[P_BPM] * fs; /* dotted eighth */
         if (dtarget > DLY_N - 4) dtarget = DLY_N - 4;
         float dfb = 0.25f + 0.45f * echo;
-        float rsize = 0.6f + 0.4f * space, rdecay = 3.0f + 15.0f * space;
+        float rsize = 0.6f + 0.4f * space, rgains[REV_LINES];
+        if (space > 0.01f) reverb_gains(rsize, 3.0f + 15.0f * space, rgains);
         int focus[2] = {(int)s->p[P_A_FOCUS], (int)s->p[P_B_FOCUS]};
         float fm = s->p[P_FM], ring = s->p[P_RING], morph = s->p[P_MORPH];
         int fm_dir = (int)s->p[P_FM_DIR], vocode = (int)s->p[P_VOCODE];
         float vamt = s->p[P_VOCODE_AMT];
         int bank_on = vocode != VOC_OFF || morph > 0.01f;
+        float g_voc[BANDS], g_ma[BANDS], g_mb[BANDS];
+        if (bank_on)
+            for (int b = 0; b < BANDS; b++) {
+                float na = s->env_a[b] + 1e-3f, nb = s->env_b[b] + 1e-3f;
+                g_voc[b] = vocode == VOC_A_TO_B ? s->env_a[b] / nb : s->env_b[b] / na;
+                if (morph > 0.01f) { /* both voices steered toward an envelope between theirs */
+                    float target = expf((1 - morph) * logf(na) + morph * logf(nb));
+                    g_ma[b] = (1 - morph) * target / na;
+                    g_mb[b] = morph * target / nb;
+                }
+            }
+
+        /* converse: whoever is talking holds the floor; when they pause and the other is talking, it passes */
+        float converse = s->p[P_CONVERSE];
+        if (converse > 0.01f) {
+            int h = s->floor_holder, o2 = !h;
+            int talk_h = s->osc[h].talk_env > 0.35f * s->osc[h].talk_peak && s->osc[h].talk_env > 0.003f;
+            int talk_o = s->osc[o2].talk_env > 0.35f * s->osc[o2].talk_peak && s->osc[o2].talk_env > 0.003f;
+            s->floor_quiet = talk_h ? 0 : s->floor_quiet + n / fs;
+            if (talk_o && s->floor_quiet > 0.25f) { s->floor_holder = o2; s->floor_quiet = 0; }
+        }
+        float duck_target[2];
+        for (int o = 0; o < 2; o++)
+            duck_target[o] = converse > 0.01f && o != s->floor_holder ? 1.0f - 0.95f * converse : 1.0f;
         float fstep = 1.0f / (0.15f * fs);
 
         for (int i = b0; i < b0 + n; i++) {
@@ -943,10 +994,20 @@ void synth_process(Synth *s, const float *inA, const float *inB, float *out, int
                 float gg = rhythm_eval(s, o, beat);
                 os->gate += (gg - os->gate) * 0.04f;
                 float vl = os->out[0] * os->gate, vr = os->out[1] * os->gate;
+                /* speech-band activity of this voice (before ducking), for converse */
+                float mono = 0.5f * (vl + vr);
+                os->talk_hp += (mono - os->talk_hp) * 0.03f;           /* removes rumble below ~250 Hz */
+                os->talk_lp += ((mono - os->talk_hp) - os->talk_lp) * 0.35f; /* and hiss above ~3.5 kHz */
+                float ta = fabsf(os->talk_lp);
+                os->talk_env += (ta - os->talk_env) * (ta > os->talk_env ? 0.01f : 0.0003f);
+                os->talk_peak = os->talk_env > os->talk_peak ? os->talk_env : os->talk_peak * 0.99999f;
+                os->duck += (duck_target[o] - os->duck) * 0.0005f; /* ~40 ms */
+                vl *= os->duck;
+                vr *= os->duck;
                 vm[o] = 0.5f * (vl + vr) * s->s_lvl[o];
                 s->tap[o ? TAP_B : TAP_A][tw] = 0.5f * (vl + vr);
                 os->level += (fabsf(vl) + fabsf(vr) - os->level) * 0.001f;
-                float pan = o ? 0.25f : -0.25f; /* A a little left, B a little right */
+                float pan = s->p[P_A_PAN + o * OSC_STRIDE];
                 x[0] += vl * s->s_lvl[o] * (1.0f - (pan > 0 ? pan : 0));
                 x[1] += vr * s->s_lvl[o] * (1.0f + (pan < 0 ? pan : 0));
             }
@@ -967,13 +1028,9 @@ void synth_process(Synth *s, const float *inA, const float *inB, float *out, int
                     float ea = fabsf(ba), eb = fabsf(bb);
                     s->env_a[b] += (ea - s->env_a[b]) * (ea > s->env_a[b] ? 0.01f : 0.0015f);
                     s->env_b[b] += (eb - s->env_b[b]) * (eb > s->env_b[b] ? 0.01f : 0.0015f);
-                    float na = s->env_a[b] + 1e-3f, nb = s->env_b[b] + 1e-3f;
-                    if (vocode == VOC_A_TO_B) voc += bb * s->env_a[b] / nb; /* B's sound with A's spectrum */
-                    else if (vocode == VOC_B_TO_A) voc += ba * s->env_b[b] / na;
-                    if (morph > 0.01f) { /* both voices steered to an envelope between theirs */
-                        float target = powf(na, 1 - morph) * powf(nb, morph);
-                        mor += (1 - morph) * ba * target / na + morph * bb * target / nb;
-                    }
+                    if (vocode == VOC_A_TO_B) voc += bb * g_voc[b]; /* B's sound with A's spectrum */
+                    else if (vocode == VOC_B_TO_A) voc += ba * g_voc[b];
+                    if (morph > 0.01f) mor += ba * g_ma[b] + bb * g_mb[b];
                 }
                 if (vocode != VOC_OFF) {
                     float h = fast_tanh(voc * 1.5f) * 0.7f;
@@ -1031,7 +1088,7 @@ void synth_process(Synth *s, const float *inA, const float *inB, float *out, int
             /* space send */
             if (space > 0.01f) {
                 float wl, wr;
-                reverb_tick(s, x[0], x[1], &wl, &wr, rsize, rdecay);
+                reverb_tick(s, x[0], x[1], &wl, &wr, rsize, rgains);
                 x[0] += wl * space * 1.2f;
                 x[1] += wr * space * 1.2f;
             }

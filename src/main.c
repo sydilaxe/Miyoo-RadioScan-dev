@@ -74,22 +74,18 @@ enum { KB_ADD_URL, KB_ADD_NAME, KB_SEARCH };
 enum { TAB_RADIO, TAB_VOICES, TAB_RHYTHM, TAB_ENGINE, TAB_COUNT };
 static const char *const tab_names[TAB_COUNT] = {"RADIO", "VOICES", "RHYTHM", "ENGINE"};
 
-#define ROW_RING_SEL (-2)
 #define ROW_HEADER (-3)
 
 static struct {
     int screen, overlay;
     int tab;
     int sel[TAB_COUNT], scroll[TAB_COUNT];
-    int ring_sel;
     int radio_sel, radio_scroll;
     int confirm_delete;
     int octave;
     int held[B_COUNT];
     Uint32 held_since[B_COUNT], last_repeat[B_COUNT];
-    int key_note[B_COUNT];
-    int audition_note;
-    int r2_used, l2_used;     /* R2 / L2 acted as a modifier while held */
+    int l2_used;              /* L2 acted as a modifier while held (otherwise a tap = grab) */
     char toast[128];
     Uint32 toast_until;
     Uint32 grab_flash, menu_armed;
@@ -98,7 +94,6 @@ static struct {
     int pending_station[2];
     Uint32 pending_at[2];
     int tuned[2];
-    Uint32 scan_next[2], error_since[2], mismatch_since[2];
     int kb_purpose, kb_row, kb_col, kb_shift;
     char kb_text[512], kb_url[512];
     int kb_cat;
@@ -112,9 +107,6 @@ static struct {
 
 /* ================================================================== audio */
 
-#define SCOPE_N 4096
-static float scope_buf[SCOPE_N];
-static volatile unsigned scope_w;
 static float bufA[4096], bufB[4096], bufO[4096];
 
 /* Treat denormal floats as zero in the audio thread: decaying reverb/filter tails otherwise
@@ -146,14 +138,11 @@ static void audio_cb(void *ud, Uint8 *stream, int len)
         stream_read(st[0], bufA, n);
         stream_read(st[1], bufB, n);
         synth_process(syn, bufA, bufB, bufO, n);
-        unsigned w = scope_w;
         for (int i = 0; i < n; i++) {
             float l = bufO[i * 2], r = bufO[i * 2 + 1];
             out[i * 2] = (int16_t)(l * 32767.0f);
             out[i * 2 + 1] = (int16_t)(r * 32767.0f);
-            scope_buf[(w + i) & (SCOPE_N - 1)] = 0.5f * (l + r);
         }
-        scope_w = w + n;
         out += n * 2;
         frames -= n;
     }
@@ -382,7 +371,6 @@ static void tune_now(int o, int idx)
     synth_set_param(syn, P_A_STATION + o * OSC_STRIDE, (float)idx);
     ui.pending_station[o] = -2;
     ui.tuned[o] = idx;
-    ui.error_since[o] = 0;
     if (idx >= 0 && idx < stations.count) stream_play(st[o], stations.items[idx].url);
     else stream_stop(st[o]);
     ui.dirty_settings = 1;
@@ -886,6 +874,88 @@ static void draw_bloom(int cx, int cy, float rin, float rout, float rmax, int ta
     }
 }
 
+/* ------------------------------------------------------------------ spectrum backdrop */
+
+#define FFT_N 1024
+#define SPEC_BANDS 64
+
+static void fft(float *re, float *im, int n) /* in-place radix-2 */
+{
+    for (int i = 1, j = 0; i < n; i++) {
+        int bit = n >> 1;
+        for (; j & bit; bit >>= 1) j ^= bit;
+        j ^= bit;
+        if (i < j) { float t = re[i]; re[i] = re[j]; re[j] = t; t = im[i]; im[i] = im[j]; im[j] = t; }
+    }
+    for (int len = 2; len <= n; len <<= 1) {
+        float ang = -2.0f * (float)M_PI / len, wr = cosf(ang), wi = sinf(ang);
+        for (int i = 0; i < n; i += len) {
+            float cr = 1, ci = 0;
+            for (int k = 0; k < len / 2; k++) {
+                float ur = re[i + k], ui = im[i + k];
+                float vr = re[i + k + len / 2] * cr - im[i + k + len / 2] * ci;
+                float vi = re[i + k + len / 2] * ci + im[i + k + len / 2] * cr;
+                re[i + k] = ur + vr; im[i + k] = ui + vi;
+                re[i + k + len / 2] = ur - vr; im[i + k + len / 2] = ui - vi;
+                float t = cr * wr - ci * wi;
+                ci = cr * wi + ci * wr;
+                cr = t;
+            }
+        }
+    }
+}
+
+/* band powers (log-spaced 50 Hz .. 16 kHz) of a tap */
+static void tap_bands(int tap, float *bands)
+{
+    static float re[FFT_N], im[FFT_N], win[FFT_N];
+    if (win[1] == 0)
+        for (int i = 0; i < FFT_N; i++) win[i] = 0.5f - 0.5f * cosf(2.0f * (float)M_PI * i / (FFT_N - 1));
+    synth_tap_read(syn, tap, re, FFT_N);
+    for (int i = 0; i < FFT_N; i++) { re[i] *= win[i]; im[i] = 0; }
+    fft(re, im, FFT_N);
+    static int edge[SPEC_BANDS + 1];
+    if (!edge[SPEC_BANDS]) { /* FFT bins at the band edges, computed once */
+        float hz_per_bin = (float)audio_rate / FFT_N;
+        for (int b = 0; b <= SPEC_BANDS; b++) {
+            int k = (int)(50.0f * powf(320.0f, (float)b / SPEC_BANDS) / hz_per_bin);
+            if (b && k <= edge[b - 1]) k = edge[b - 1] + 1;
+            edge[b] = k > FFT_N / 2 ? FFT_N / 2 : k;
+        }
+    }
+    for (int b = 0; b < SPEC_BANDS; b++) {
+        int k0 = edge[b], k1 = edge[b + 1] > k0 ? edge[b + 1] : k0 + 1;
+        float pw = 0;
+        for (int k = k0; k < k1; k++) pw += re[k] * re[k] + im[k] * im[k];
+        bands[b] = pw / (k1 - k0);
+    }
+}
+
+/* Soft spectrum behind the circles, mirrored around the middle of the screen. Height follows the output;
+ * colour shows which voice is strongest in each band: leaf for A, amber for B. */
+static void draw_spectrum(void)
+{
+    static float height[SPEC_BANDS], mixab[SPEC_BANDS];
+    float out[SPEC_BANDS], a[SPEC_BANDS], b[SPEC_BANDS];
+    tap_bands(TAP_OUT, out);
+    tap_bands(TAP_A, a);
+    tap_bands(TAP_B, b);
+    float w = (float)SCREEN_W / SPEC_BANDS;
+    for (int i = 0; i < SPEC_BANDS; i++) {
+        float db = 10.0f * log10f(out[i] + 1e-12f);       /* about -110 .. +30 */
+        float h = (db + 60.0f) / 80.0f;
+        h = h < 0 ? 0 : h > 1 ? 1 : h;
+        height[i] = h > height[i] ? h : height[i] * 0.9f; /* rises fast, falls gently */
+        float t = b[i] / (a[i] + b[i] + 1e-12f);
+        mixab[i] += (t - mixab[i]) * 0.3f;
+        int hp = (int)(height[i] * 130);
+        if (hp < 1) continue;
+        Uint32 col = mix_col(C_BG, mix_col(C_LEAF, C_AMBER, mixab[i]), 0.08f + 0.12f * height[i]); /* a quiet backdrop */
+        int x = (int)(i * w);
+        fill(x + 1, 240 - hp, (int)w - 2, hp * 2, col);
+    }
+}
+
 /* a voice: faint bloom of the raw broadcast inside, bright bloom of the voice as it sounds outside,
  * and its rhythm as dots around the rim */
 static void draw_voice(int o, int cx, int cy, int R)
@@ -896,6 +966,7 @@ static void draw_voice(int o, int cx, int cy, int R)
     float gate = synth_gate_value(syn, o);
     disc(cx, cy, R, C_PANEL);
     circle(cx, cy, R, mix_col(C_PANEL2, col, gate * synth_osc_level(syn, o) * 2.0f));
+    if (synth_floor(syn) == o) { circle(cx, cy, R + 1, col); circle(cx, cy, R + 2, col); } /* converse: has the floor */
     draw_bloom(cx, cy, R * 0.26f, R * 0.48f, R * 0.5f, o ? TAP_RAW_B : TAP_RAW_A, mix_col(C_PANEL, col, 0.45f), 0);
     draw_bloom(cx, cy, R * 0.52f, R * 0.9f, R + 12, o ? TAP_B : TAP_A, col, 0);
     int steps = (int)p[P_A_STEPS + base], pulses = (int)p[P_A_PULSES + base], rot = (int)p[P_A_ROTATE + base];
@@ -968,12 +1039,14 @@ static void draw_centre(int cx, int cy)
     else if (p[P_FM] > 0.01f) snprintf(b, sizeof b, "fm %s", (int)p[P_FM_DIR] == FM_B_TO_A ? "B>A" : "A>B");
     else if (p[P_RING] > 0.01f) snprintf(b, sizeof b, "ring");
     else if (m > 0.01f) snprintf(b, sizeof b, "morph");
+    else if (p[P_CONVERSE] > 0.01f) snprintf(b, sizeof b, "converse");
     if (b[0]) text_center(cx, cy + 72, b, C_DIM, 0);
 }
 
 static void draw_play(void)
 {
     fill(0, 0, SCREEN_W, SCREEN_H, C_BG);
+    draw_spectrum();
     text(16, 8, "radioscan", C_DIM, 0);
     draw_beat(520, 8);
     char info[48];
@@ -1151,7 +1224,7 @@ static int selected_stage(void)
     int sel = ui.sel[ui.tab];
     if (sel < 0 || sel >= n || rows[sel] < 0) return -1;
     int id = rows[sel];
-    if (id >= P_VOCODE && id <= P_MORPH) return 0;
+    if (id >= P_VOCODE && id <= P_CONVERSE) return 0;
     if (id == P_TONE || id == P_RESO) return 1;
     if (id == P_FOLD) return 2;
     if (id == P_ECHO) return 3;
@@ -1321,7 +1394,6 @@ static void on_press(int b)
         return;
     }
     if (ui.screen == SCR_PLAY && ui.held[B_R2] && b != B_R2) { /* sound gestures and dice */
-        ui.r2_used = 1;
         if (b == B_L1) { synth_dice(syn, DICE_RHYTHM); toast("new rhythms"); ui.dirty_settings = 1; }
         if (b == B_R1) { synth_dice(syn, DICE_SOUND); toast("new sound"); ui.dirty_settings = 1; }
         if (b == B_SELECT) { hop(0); hop(1); toast("hopping stations"); }
@@ -1335,7 +1407,7 @@ static void on_press(int b)
 
     if (ui.screen == SCR_PLAY) {
         if (b == B_L2) { ui.l2_used = 0; return; }
-        if (b == B_R2) { ui.r2_used = 0; return; }
+        if (b == B_R2) return;
         if (b == B_L1 && ui.octave > -3) { ui.octave--; set_pitch(); ui.dirty_settings = 1; return; }
         if (b == B_R1 && ui.octave < 3) { ui.octave++; set_pitch(); ui.dirty_settings = 1; return; }
         play_rhythm_button(b);
@@ -1706,10 +1778,8 @@ int main(int argc, char **argv)
         synth_grab(syn, -1);
         for (int k = 0; k < 30; k++) {
             synth_process(syn, fa, fb, fo, 1024);
-            memcpy(scope_buf, fo, sizeof(float) * 2048);
             update_blooms();
         }
-        scope_w = 2048;
         render();
         SDL_SaveBMP(screen, shot);
         stream_destroy(st[0]);
@@ -1747,7 +1817,8 @@ int main(int argc, char **argv)
         sync_poll(now_us());
         render();
         present();
-        SDL_Delay(30);
+        Uint32 spent = SDL_GetTicks() - now; /* ~30 frames per second, whatever the drawing cost */
+        if (spent < 33) SDL_Delay(33 - spent);
     }
 
     sync_close();

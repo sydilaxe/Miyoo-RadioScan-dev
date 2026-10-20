@@ -16,7 +16,8 @@ a wavefolder, echo and space.
   - **WAVE:** a few milliseconds of the stream as a pitched waveform that keeps re-scanning the broadcast.
   - **GRAIN:** a cloud of grains from the last moments of the stream.
 
-  **Focus** can make a voice listen only to speech or only to music. An optional **oscillator** (sine,
+  Each voice has its own **level** and **pan**. **Focus** can make a voice listen only to speech or only to
+  music; either voice can play any station. An optional **oscillator** (sine,
   triangle, saw or square) can be mixed into each voice for a cleaner tone or a carrier for cross-modulation.
   It's off by default; the radio comes first.
 - **Two rhythms.** Each voice has a Euclidean rhythm (steps, pulses, rotate, rate, length, chance) that decides
@@ -27,6 +28,9 @@ a wavefolder, echo and space.
   - **FM:** one voice bends the other's pitch.
   - **Ring mod.**
   - **Morph:** blends the two voices' spectra from A toward B.
+  - **Converse:** whichever voice is talking holds the floor and the other ducks. When the speaker pauses and
+    the other station is talking, the floor passes over, so two broadcasts take turns like an overheard
+    dialogue. It's made for two speech stations, but works on anything.
 - **Sound.**
   - **Filter:** one knob from dark (low-pass) through open to thin (high-pass), plus resonance.
   - **Fold**, then **echo** (a dotted-eighth ping-pong) and **space** (reverb).
@@ -46,6 +50,9 @@ The PLAY page is for performing: the two rhythms and the sound, live.
 - **Voice circles (left A, right B).** A faint inner form shows the raw broadcast; a bright outer form shows
   the voice as it sounds. The rhythm runs as dots around the rim: coloured dots are pulses, and the white one
   is the current step. Five dots underneath show how speech-like the station is.
+- **Spectrum backdrop.** A soft frequency spectrum behind the circles. Each band's height is the output level,
+  and its colour shows which voice dominates it: leaf green for A, amber for B.
+- **Converse.** The voice holding the floor gets a bright ring.
 - **Centre.** The final sound. The dot travelling over the top shows the morph position, from A on the left to
   B on the right.
 - **Five circles along the bottom:** *cross → filter → fold → echo → space*. Each grows the more it changes

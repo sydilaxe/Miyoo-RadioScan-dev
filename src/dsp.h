@@ -14,14 +14,14 @@
 
 #define VOICE_FIELDS(X)                                                                                       \
     P_##X##_STATION, P_##X##_MODE, P_##X##_TUNE, P_##X##_SIZE, P_##X##_TEXTURE, P_##X##_FOCUS, P_##X##_LEVEL, \
-    P_##X##_OSC, P_##X##_OSC_MIX,                                                                             \
+    P_##X##_PAN, P_##X##_OSC, P_##X##_OSC_MIX,                                                                             \
     P_##X##_RHYTHM, P_##X##_STEPS, P_##X##_PULSES, P_##X##_ROTATE, P_##X##_RATE, P_##X##_LENGTH, P_##X##_CHANCE
 
 enum {
     VOICE_FIELDS(A), /* VOICE B id = VOICE A id + OSC_STRIDE */
     VOICE_FIELDS(B),
     P_BPM, P_SYNC,
-    P_VOCODE, P_VOCODE_AMT, P_FM, P_FM_DIR, P_RING, P_MORPH,
+    P_VOCODE, P_VOCODE_AMT, P_FM, P_FM_DIR, P_RING, P_MORPH, P_CONVERSE,
     P_ROOT,
     P_TONE, P_RESO, P_FOLD, P_ECHO, P_SPACE, P_VOLUME,
     P_COUNT
@@ -94,6 +94,9 @@ float synth_speechness(const Synth *s, int osc);       /* 0 music .. 1 speech */
 int synth_voice_state(const Synth *s, int osc);        /* VS_* */
 float synth_osc_level(const Synth *s, int osc);
 float synth_leveller_gain(const Synth *s);
+int synth_floor(const Synth *s);                       /* converse: which voice holds the floor (0, 1), -1 off */
+/* copy the latest n samples (n <= 2048) of a tap, oldest first */
+void synth_tap_read(const Synth *s, int tap, float *dst, int n);
 
 enum { TAP_STREAM, TAP_VOICES, TAP_CROSS, TAP_FILTER, TAP_FOLD, TAP_ECHO, TAP_OUT, TAP_A, TAP_B, TAP_RAW_A, TAP_RAW_B, TAP_COUNT };
 /* level (RMS), brightness (0 dark .. ~1.4 noise) and crest factor (peak / RMS) over the last ~20 ms */
