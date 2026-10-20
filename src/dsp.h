@@ -1,67 +1,41 @@
-/* RadioScan synth engine — internet radio streams as oscillators.
+/* RadioScan synth engine — two internet radio streams, each played through a voice and opened
+ * and closed by its own Euclidean rhythm.
  *
- *  stream A -> [voice sense] -> OSC A (LIVE | LOOP | WAVE | GRAIN) (+ tone) -> rhythmic gate A --\
- *                                                                                       HYBRID (vocoder / follow / cross-fold)
- *  stream B -> [voice sense] -> OSC B (LIVE | LOOP | WAVE | GRAIN) (+ tone) -> rhythmic gate B --/  + ring mod, B>A FM, drive
- *        -> FILTER 1 (state-variable) -> WAVEFOLDER -> FILTER 2 (ladder) -> VCA
- *        -> DELAY -> REVERB (5-line FDN) -> MASTER
- *
- *  Modulation: 5 Euclidean rings, LFO, ADSR, 5 random-walk drifters, tempo clock + arpeggiator.
- *  "Voice sense" classifies each stream as speech or music so an oscillator can focus on either.
+ *  stream A -> [voice sense] -> VOICE A (LIVE | LOOP | WAVE | GRAIN) (+ osc) -> RHYTHM A --\
+ *                                                       FM between the voices, either way    CROSS: ring, vocode, morph
+ *  stream B -> [voice sense] -> VOICE B (LIVE | LOOP | WAVE | GRAIN) (+ osc) -> RHYTHM B --/   -> FILTER -> FOLD
+ *                                                                                             -> ECHO -> SPACE
+ *                                                                                             -> VOLUME -> LEVELLER
+ *  The tempo clock (tap tempo, Wi-Fi sync) drives both rhythms.
+ *  "Voice sense" classifies each stream as speech or music so a voice can focus on either.
  */
 #ifndef DSP_H
 #define DSP_H
 
-#define OSC_FIELDS(X)                                                                                         \
-    P_##X##_STATION, P_##X##_MODE, P_##X##_SOURCE, P_##X##_TUNE, P_##X##_FINE, P_##X##_SIZE, P_##X##_TEXTURE,  \
-    P_##X##_MOTION, P_##X##_FOCUS, P_##X##_POOL, P_##X##_AUTOSCAN, P_##X##_LEVEL, P_##X##_PAN,                \
-    P_##X##_TONE, P_##X##_TONE_MIX,                                                                           \
-    P_##X##_GATE, P_##X##_G_STEPS, P_##X##_G_PULSES, P_##X##_G_ROTATE, P_##X##_G_RATE, P_##X##_G_ATTACK,       \
-    P_##X##_G_LENGTH, P_##X##_G_RELEASE, P_##X##_G_CURVE, P_##X##_G_CHANCE
-
-#define RING_FIELDS(N)                                                                                        \
-    P_E##N##_STEPS, P_E##N##_PULSES, P_E##N##_ROTATE, P_E##N##_RATE, P_E##N##_DEST, P_E##N##_DEPTH,            \
-    P_E##N##_CHANCE, P_E##N##_DECAY
+#define VOICE_FIELDS(X)                                                                                       \
+    P_##X##_STATION, P_##X##_MODE, P_##X##_TUNE, P_##X##_SIZE, P_##X##_TEXTURE, P_##X##_FOCUS, P_##X##_LEVEL, \
+    P_##X##_OSC, P_##X##_OSC_MIX,                                                                             \
+    P_##X##_RHYTHM, P_##X##_STEPS, P_##X##_PULSES, P_##X##_ROTATE, P_##X##_RATE, P_##X##_LENGTH, P_##X##_CHANCE
 
 enum {
-    /* VOICES: OSC A and OSC B share a layout (OSC B id = OSC A id + OSC_STRIDE) */
-    OSC_FIELDS(A),
-    OSC_FIELDS(B),
-    /* SHAPE */
-    P_HYBRID, P_HYBRID_AMT, P_RING, P_FM, P_DRIVE,
-    P_F1_MODE, P_F1_CUTOFF, P_F1_RES, P_F1_KEYTRACK,
-    P_FOLD_TYPE, P_FOLD_AMOUNT, P_FOLD_BIAS, P_FOLD_MIX,
-    P_F2_MODE, P_F2_CUTOFF, P_F2_RES, P_F2_DRIVE, P_F2_KEYTRACK,
-    /* MOTION: 5 Euclidean rings (ring n id = ring 1 id + n * RING_STRIDE), clock, chance */
-    RING_FIELDS(1), RING_FIELDS(2), RING_FIELDS(3), RING_FIELDS(4), RING_FIELDS(5),
-    P_BPM, P_ROOT, P_SCALE, P_GLIDE, P_ARP_MODE, P_ARP_RATE, P_ARP_OCT, P_ARP_GATE, P_SYNC,
-    P_DRIFT, P_DRIFT_SPEED, P_REVERSE, P_OCT_JUMP, P_SCATTER,
-    /* SPACE */
-    P_ENV_AMP, P_ENV_ATTACK, P_ENV_DECAY, P_ENV_SUSTAIN, P_ENV_RELEASE, P_ENV_TO_F1, P_ENV_TO_F2, P_ENV_TO_FOLD,
-    P_LFO_SHAPE, P_LFO_SYNC, P_LFO_RATE, P_LFO_TO_F1, P_LFO_TO_FOLD, P_LFO_TO_F2, P_LFO_TO_PITCH, P_LFO_TO_AMP,
-    P_DLY_SYNC, P_DLY_TIME, P_DLY_FEEDBACK, P_DLY_MIX,
-    P_REV_SIZE, P_REV_DECAY, P_REV_DAMP, P_REV_MIX, P_REV_FREEZE,
-    P_MASTER,
+    VOICE_FIELDS(A), /* VOICE B id = VOICE A id + OSC_STRIDE */
+    VOICE_FIELDS(B),
+    P_BPM, P_SYNC,
+    P_VOCODE, P_VOCODE_AMT, P_FM, P_FM_DIR, P_RING, P_MORPH,
+    P_ROOT,
+    P_TONE, P_RESO, P_FOLD, P_ECHO, P_SPACE, P_VOLUME,
     P_COUNT
 };
 
 #define OSC_STRIDE (P_B_STATION - P_A_STATION)
-#define RING_STRIDE (P_E2_STEPS - P_E1_STEPS)
-#define NUM_RINGS 5
-#define NUM_DRIFT 5
 
 enum { OSC_LIVE, OSC_LOOP, OSC_WAVE, OSC_GRAIN };
-enum { SRC_SELF, SRC_OTHER, SRC_BOTH };
 enum { FOCUS_ALL, FOCUS_VOICE, FOCUS_MUSIC };
 enum { CAT_ANY, CAT_VOICE, CAT_MUSIC, CAT_SOUND };
 enum { VS_SILENT, VS_MUSIC, VS_VOICE };
-enum { HY_OFF, HY_VOCODE_AB, HY_VOCODE_BA, HY_FOLLOW, HY_CROSSFOLD };
-enum {
-    DEST_OFF, DEST_NOTE, DEST_F1, DEST_F2, DEST_FOLD, DEST_PITCH, DEST_LEVEL_A, DEST_LEVEL_B,
-    DEST_XFADE, DEST_RING, DEST_REVERB, DEST_DELAY, DEST_GRAB_A, DEST_GRAB_B, DEST_HOP_A, DEST_HOP_B, DEST_COUNT
-};
-
-enum { PAGE_VOICES, PAGE_SHAPE, PAGE_MOTION, PAGE_SPACE, PAGE_COUNT };
+enum { PAGE_VOICES, PAGE_RHYTHM, PAGE_ENGINE, PAGE_COUNT };
+enum { VOC_OFF, VOC_A_TO_B, VOC_B_TO_A };
+enum { FM_B_TO_A, FM_A_TO_B };
 
 typedef struct {
     const char *key;      /* settings-file key */
@@ -77,11 +51,8 @@ typedef struct {
 extern const ParamInfo param_info[P_COUNT];
 extern const char *const page_names[PAGE_COUNT];
 extern const char *const category_names[];
-extern const float autoscan_seconds[];
 const char *param_label(int id, const float *params);  /* engine-aware labels */
 const char *param_section(int id);                     /* group heading */
-#define SCALE_LEN 8
-const int *scale_intervals(int scale);                 /* 8 semitone offsets for the 8 note keys */
 int euclid_hit(int steps, int pulses, int rotate, int step);
 
 typedef struct Synth Synth;
@@ -92,56 +63,43 @@ void synth_set_param(Synth *s, int id, float v);
 float synth_get_param(const Synth *s, int id);
 const float *synth_params(const Synth *s);
 
+/* pitch for LOOP / WAVE / GRAIN voices (LIVE plays the radio as is); note 60 plays slices at their own speed */
 void synth_note_on(Synth *s, int midi_note);
 void synth_note_off(Synth *s, int midi_note);
-void synth_all_notes_off(Synth *s);
-void synth_set_base_note(Synth *s, int midi_note);     /* lowest note used by generative NOTE rings */
-void synth_grab(Synth *s, int osc);                    /* osc: 0, 1 or -1 for both */
-void synth_tap_reset(Synth *s);                        /* restart the bar on a tap */
+void synth_grab(Synth *s, int osc);                    /* fresh slice from the stream; osc 0, 1 or -1 */
+
+/* clock: tap tempo and Wi-Fi sync (main thread; hold the audio lock around position calls) */
+void synth_tap_reset(Synth *s);
 float synth_beat_phase(const Synth *s);
-/* clock control for Wi-Fi sync (main thread; hold the audio lock around calls) */
 double synth_position(const Synth *s);                 /* 16th notes since the downbeat */
 void synth_set_position(Synth *s, double steps);
 void synth_set_clock_rate(Synth *s, double rate);      /* 0.9 .. 1.1 speed trim */
-void synth_set_running(Synth *s, int on);               /* clock transport: rings, gates, arp */
+void synth_set_running(Synth *s, int on);
 int synth_running(const Synth *s);
-int synth_take_hop(Synth *s, int osc);                 /* 1 if a ring asked this oscillator to hop station */
 
-/* Dice: randomise parameters within musical ranges. amount 1 = anything goes, small = gentle mutation. */
+/* dice: randomise parameters within musical ranges (amount 1 = anything goes, small = gentle) */
 void synth_randomize(Synth *s, const int *ids, int n, float amount);
-enum { DICE_SOUND, DICE_MOTION, DICE_MUTATE };
+enum { DICE_SOUND, DICE_RHYTHM, DICE_MUTATE };
 void synth_dice(Synth *s, int which);
 
-/* inA / inB: interleaved stereo stream audio; out: interleaved stereo. */
+/* inA / inB: interleaved stereo stream audio; out: interleaved stereo */
 void synth_process(Synth *s, const float *inA, const float *inB, float *out, int frames);
 
-/* display helpers */
-float synth_lfo_value(const Synth *s);
-float synth_env_value(const Synth *s);
+/* display */
 int synth_current_note(const Synth *s);
-int synth_gate_on(const Synth *s);
-int synth_ring_step(const Synth *s, int ring);
-float synth_ring_flash(const Synth *s, int ring);
-int synth_gate_step(const Synth *s, int osc);
-float synth_gate_value(const Synth *s, int osc);
-float synth_drift_value(const Synth *s, int i);
+int synth_rhythm_step(const Synth *s, int osc);
+float synth_rhythm_flash(const Synth *s, int osc);     /* 1 on a hit, fading */
+float synth_gate_value(const Synth *s, int osc);       /* how open the voice is now, 0..1 */
 float synth_speechness(const Synth *s, int osc);       /* 0 music .. 1 speech */
 int synth_voice_state(const Synth *s, int osc);        /* VS_* */
 float synth_osc_level(const Synth *s, int osc);
-int synth_osc_snapshot(Synth *s, int osc, float *dst, int n);
+float synth_leveller_gain(const Synth *s);
 
-/* Signal taps for the display: the live waveform at points along the chain. */
-enum { TAP_STREAM, TAP_VOICES, TAP_FILTER1, TAP_FOLD, TAP_FILTER2, TAP_OUT, TAP_A, TAP_B, TAP_RAW_A, TAP_RAW_B, TAP_COUNT };
-/* Copy the most recent `span` samples of a tap, resampled to n points, starting at a rising zero crossing
- * when one is near so the picture holds still. */
-void synth_tap(const Synth *s, int tap, float *dst, int n, int span);
-/* Live (modulated) values for drawing: filter cutoffs in Hz, fold drive and bias, fold type, gate per voice. */
-typedef struct { float cutoff1, cutoff2, fold_amount, fold_bias; int fold_type, f1_mode, f2_mode; } SynthLive;
-void synth_live(const Synth *s, SynthLive *out);
-float synth_fold_preview(int fold_type, float x);   /* the folder's transfer curve */
-/* Sound features of a tap over the last ~20 ms: level (RMS), brightness (0 dark .. ~1.4 noise-bright)
- * and crest factor (peak / RMS: ~1.4 smooth .. 4+ spiky). Drives the abstract forms on screen. */
+enum { TAP_STREAM, TAP_VOICES, TAP_CROSS, TAP_FILTER, TAP_FOLD, TAP_ECHO, TAP_OUT, TAP_A, TAP_B, TAP_RAW_A, TAP_RAW_B, TAP_COUNT };
+/* level (RMS), brightness (0 dark .. ~1.4 noise) and crest factor (peak / RMS) over the last ~20 ms */
 void synth_tap_features(const Synth *s, int tap, float *rms, float *bright, float *crest);
+float synth_fold_preview(float x, float fold);         /* the folder's shape at a fold amount */
+float synth_cross_amount(const Synth *s);              /* 0..1: how much cross-modulation is on */
 
 float param_clamp(int id, float v);
 float param_adjust(int id, float v, int dir, int fine);

@@ -1,86 +1,69 @@
 # RadioScan
 
-A synthesizer for the **Miyoo Mini Plus** (OnionOS) whose sound sources are **internet radio streams**.
-Two stations at a time become two voices. Each voice reshapes its broadcast with one of four engines, then the
-result runs through hybrids, filters, a wavefolder, rhythmic gates, delay and a long reverb. Five Euclidean
-rings, chance and drift keep it moving. It's designed for ambient performance and quiet, meditative listening.
+A rhythm instrument for the **Miyoo Mini Plus** (OnionOS) played with **internet radio**.
+Two stations become two voices. Each voice is opened and closed by its own Euclidean rhythm, the two can
+cross-modulate each other (vocode, FM, ring mod, spectral morph), and the result runs through a filter,
+a wavefolder, echo and space.
 
 ![play screen](docs/play.png)
 
-## What it does
+## How it works
 
-- **Streams are the oscillators.** Each voice has a station and an engine:
-  - **LIVE** plays the broadcast directly, with optional sample-rate and bit crushing.
-  - **LOOP** grabs a slice of the stream and replays it at any pitch.
-  - **WAVE** turns a few milliseconds of the stream into a single-cycle wavetable played at the note's pitch. It
-    keeps re-grabbing at its *Scan Rate*, so the timbre drifts with the broadcast.
-  - **GRAIN** is a granular cloud scattered over the last few seconds of the stream.
-  - **Source** lets a voice play its own stream, the other voice's stream, or both.
-  - A simple **tone oscillator** (sine, triangle, saw, square) can be mixed into each voice. It's a clean carrier
-    for the vocoder and ring mod. It's off by default.
-- **Voices or music.** A real-time detector listens to each stream and judges speech against music. Set a
-  voice's **Focus** to *VOICES ONLY* or *MUSIC ONLY* and only matching material is recorded, so a grain cloud
-  can be built purely from talk radio while the station plays songs. Stations are also tagged
-  **voice / music / sound**. Auto-scan and station hops can stay inside one **Station Pool**, and with auto-scan
-  on, a voice leaves stations that never match its focus.
-- **Hybrids:** vocoder (A speaks through B, or B through A), *A shapes B* (envelope follower), cross-fold,
-  ring mod, and B→A audio-rate FM.
-- **Shaping:** state-variable filter (LP/BP/HP/notch), wavefolder (sine, triangle, multi), ladder filter
-  (LP24/LP12/BP/HP) with drive, VCA envelope (drone or gated), LFO, ping-pong delay, and a 5-line FDN reverb
-  with decays up to 60 s and a freeze.
-- **Rhythmic gates per voice:** a Euclidean pattern at a tempo-synced rate. Every pulse is shaped by attack,
-  length, release and curve (soft swells to sharp chops), with depth and per-step chance.
-- **Motion:** **five Euclidean rings** (steps, pulses, rotation, rate, destination, depth, chance, decay).
-  Destinations: filters, fold, pitch, levels, A↔B crossfade, ring mod, reverb, delay. Rings can also fire
-  events: generative notes from the scale, fresh grabs, or a hop to another station in the pool.
-- **Chance:** five slow random-walk drifters, reverse-grain chance, octave jumps, pitch scatter, and dice to
-  randomise the sound, the motion, or one section, or to gently mutate everything.
-- **Tap tempo** (SELECT) drives the rings, gates, arpeggiator, LFO sync and delay sync.
-- **Wi-Fi sync:** units on the same network lock tempo, bar phase and start/stop over UDP (port 5150), so
-  several Miyoos play in time. See [Wi-Fi sync](#wi-fi-sync).
-- **Stations:** 35 are preloaded and you can add more three ways:
+- **Two radio voices.** Each voice plays one station with one of four engines:
+  - **LIVE:** the broadcast as it is (the default for voice A), with an optional sample-rate crush.
+  - **LOOP:** a slice of the stream, replayed at the voice's pitch; every rhythm pulse restarts it (the default
+    for voice B).
+  - **WAVE:** a few milliseconds of the stream as a pitched waveform that keeps re-scanning the broadcast.
+  - **GRAIN:** a cloud of grains from the last moments of the stream.
+
+  **Focus** can make a voice listen only to speech or only to music. An optional **oscillator** (sine,
+  triangle, saw or square) can be mixed into each voice for a cleaner tone or a carrier for cross-modulation.
+  It's off by default; the radio comes first.
+- **Two rhythms.** Each voice has a Euclidean rhythm (steps, pulses, rotate, rate, length, chance) that decides
+  when it sounds. Every pulse opens the voice for its length, with soft edges. With the rhythm off, the voice
+  plays continuously. Tap tempo (SELECT) and Wi-Fi sync drive both rhythms.
+- **Cross-modulation.**
+  - **Vocode:** A speaks through B, or B through A.
+  - **FM:** one voice bends the other's pitch.
+  - **Ring mod.**
+  - **Morph:** blends the two voices' spectra from A toward B.
+- **Sound.**
+  - **Filter:** one knob from dark (low-pass) through open to thin (high-pass), plus resonance.
+  - **Fold**, then **echo** (a dotted-eighth ping-pong) and **space** (reverb).
+  - **Volume**, and a leveller that keeps the overall loudness steady so the radio comes through clearly.
+- **Stations.** 35 are preloaded and you can add more three ways:
   1. Edit `stations.txt` on the SD card (`Name|URL|voice|music|sound`).
   2. Type a URL on the on-screen keyboard (RADIO page, **Y**).
-  3. **Scan** the free [radio-browser.info](https://www.radio-browser.info) directory by genre (grouped into
-     voices / sound / music), by name, or at random, then audition results on either voice and save them (RADIO
-     page, **R2**).
-- **HTTPS** through a built-in mbedTLS with Mozilla's CA bundle. Certificate dates are ignored because handheld
-  clocks are often wrong, but chain and hostname are still checked. Also handles HTTP, ICY metadata (song titles),
-  redirects, and `.pls` / `.m3u` playlists.
+  3. **Scan** the free [radio-browser.info](https://www.radio-browser.info) directory by genre, by name or at
+     random, then audition results on either voice and save them (RADIO page, **R2**).
 
-**Seeing the sound.** The sound is drawn as abstract forms, not waveforms or graphs. Every point of the signal
-chain drives a "bloom":
+  HTTPS works through a built-in mbedTLS, along with ICY song titles, redirects and `.pls` / `.m3u` playlists.
 
-| Sound | Form |
-|---|---|
-| Loudness | The core swells |
-| Brightness | Petal count (3, 5, 8, 13, 21) and spin speed: filtering calms a form, brightness makes it turn and multiply |
-| Spikiness | Sharp petals instead of soft lobes |
-| Attacks | Ripples spread outward |
+## The screen
 
-- **Voice circles.** Each voice circle shows the raw broadcast as a faint inner bloom and the voice after its
-  engine and gate as a bright outer bloom.
-- **Signal path.** Five small circles follow the chain: *radio → voice → filt1 → fold → filt2*.
-  - The fold circle's petals pass through the folder at its live settings, so more fold visibly bends and
-    splits them.
-  - Filter rims show the live, modulated cutoff (the marker grows with resonance), and the fold rim shows drive.
-  - When a Euclidean ring fires, the stage it modulates flashes in that ring's colour; small dots under each
-    circle show which rings are routed there.
-- **Output.** The final sound, after delay and reverb, blooms around the current note in the middle of the
-  ring wheel, and its ripples spread through the rings.
-- **On EDIT pages,** the same signal path sits at the bottom, with the stage the selected setting affects ringed.
-- **Quiet sounds stay visible.** Forms scale to the sound's own level, so quiet material still moves while true
-  silence stays still.
+The PLAY page is for performing: the two rhythms and the sound, live.
 
-The visual design is circles throughout: knobs, rings, pads. It follows the number five (five pages, five
-rings, five drifters, pentatonic and other five-note scales, 5/16 and 5/8 note values) and a forest palette of
-moss, lichen, bark, leaf, autumn amber and birch.
+- **Voice circles (left A, right B).** A faint inner form shows the raw broadcast; a bright outer form shows
+  the voice as it sounds. The rhythm runs as dots around the rim: coloured dots are pulses, and the white one
+  is the current step. Five dots underneath show how speech-like the station is.
+- **Centre.** The final sound. The dot travelling over the top shows the morph position, from A on the left to
+  B on the right.
+- **Five circles along the bottom:** *cross → filter → fold → echo → space*. Each grows the more it changes
+  the sound.
+- **Abstract forms.** Every form is driven by the sound, not drawn as a waveform:
+  - Loudness swells the core.
+  - Brightness adds petals (3, 5, 8, 13, 21) and spin.
+  - Spiky sound sharpens the petals.
+  - Attacks send out ripples.
+  - In the fold circle the petals bend through the folder itself.
+
+The EDIT pages (**RADIO, VOICES, RHYTHM, ENGINE**) hold every setting. A strip at the bottom shows the voices
+and the five stages, with the stage you're editing ringed.
 
 | | |
 |---|---|
-| ![voices](docs/edit1.png) | ![shape](docs/shape.png) |
-| ![motion](docs/motion.png) | ![scan](docs/scan.png) |
-| ![radio](docs/radio.png) | ![shaping](docs/playmod.png) |
+| ![engine](docs/engine.png) | ![rhythm](docs/rhythm.png) |
+| ![radio](docs/radio.png) | ![sound gestures](docs/playmod.png) |
 
 ## Install
 
@@ -91,42 +74,45 @@ moss, lichen, bark, leaf, autumn amber and birch.
 
 With the card mounted on a computer, `make install SD=/path/to/card` copies the built app into `App/`.
 
-`log.txt` in the app folder records errors if something goes wrong.
-
 ## Controls
 
-**PLAY** (the home screen)
+**PLAY** (performance)
 
 | Button | Action |
 |---|---|
-| D-pad + A B X Y | eight notes of the current scale (labels on screen) |
-| L1 / R1 | octave down / up |
-| L2 | grab fresh slices from both streams |
-| hold R2 + D-pad | shape: up/down = light/dark (filter), left/right = calm/weird (fold) |
-| R2 + A / B / X / Y | dice: new sound / new motion / hop stations / mutate gently |
+| D-pad up / down | rhythm A: more / fewer pulses |
+| D-pad left / right | rhythm A: rotate |
+| X / B | rhythm B: more / fewer pulses |
+| Y / A | rhythm B: rotate |
+| hold L2 + D-pad / ABXY | steps (up/down, X/B) and rate (left/right, Y/A) of that rhythm |
+| tap L2 | grab fresh slices from both streams |
+| hold R2 + D-pad | up/down: filter brighter / darker; left/right: morph toward A / B |
+| hold R2 + X / B | fold more / less |
+| hold R2 + Y / A | space less / more |
+| R2 + L1 / R1 / SELECT | dice: new rhythms / new sound / hop both stations |
+| L1 / R1 | pitch down / up an octave (LOOP, WAVE and GRAIN voices) |
 | SELECT | tap tempo |
 | START | go to EDIT |
 | MENU twice | quit |
 
-**EDIT** (five pages: RADIO, VOICES, SHAPE, MOTION, SPACE)
+**EDIT** (RADIO, VOICES, RHYTHM, ENGINE)
 
 | Button | Action |
 |---|---|
 | L1 / R1 | previous / next page |
 | Up / Down | choose a row; Left / Right change it (hold B for fine steps) |
-| A | play the root note |
 | X / L2 | grab |
 | Y | roll the dice on the selected section |
 | SELECT | tap tempo |
 | START | back to PLAY |
 
-**RADIO page:** A sends the selected station to OSC A and B sends it to OSC B. Y adds a URL, X deletes (press
-twice), L2 sets the station's kind (voice / music / sound), and R2 scans the directory.
+**RADIO page:** A sends the selected station to voice A and B sends it to voice B. Y adds a URL, X deletes
+(press twice), L2 sets the station's kind (voice / music / sound), and R2 scans the directory.
 
 ## Wi-Fi sync
 
 RadioScan shares its clock with other units on the same Wi-Fi network that speak the same sync protocol.
-Set it under **MOTION → CLOCK → Wi-Fi Sync**:
+Set it under **RHYTHM → CLOCK → Wi-Fi Sync**:
 
 | Setting | Behavior |
 |---|---|
@@ -137,8 +123,8 @@ Set it under **MOTION → CLOCK → Wi-Fi Sync**:
 
 The leader sets the tempo; tap tempo on the leader and every follower jumps to the new downbeat. Followers
 nudge their clock speed by up to 3% to stay in phase, typically within a few milliseconds. Sync moves RadioScan's
-rhythm (rings, gates, arpeggiator, synced delay and LFO); the radio streams themselves just keep playing. If
-the leader stops its transport, followers pause their rhythm too, while the drones keep sounding.
+two rhythms and the echo time; the radio streams themselves just keep playing. If the leader stops its
+transport, followers hold their rhythms too.
 
 The badge next to the tempo shows the state: an empty ring while searching, then *lead* or *follow* once
 linked. Each unit sends 32 bytes ten times a second, so sync adds almost nothing on top of the two radio
@@ -199,7 +185,8 @@ CI runs both on every push.
 
 ## Settings
 
-All parameters are saved to `settings.cfg` in the app folder, including when OnionOS powers off.
+All parameters are saved to `settings.cfg` in the app folder, including when OnionOS powers off. When a new
+version changes the sound defaults, older settings keep their stations but start from the new sound.
 
 `launch.sh` uses the same setup as the sibling apps HI5 and Jaffedrone, which mirror Onion's own GMU launcher.
 It stops Onion's audio server while RadioScan runs, uses Onion's MI_AO/MI_GFX-backed SDL 1.2, sets the
@@ -207,12 +194,13 @@ performance CPU governor, and keeps the device awake. It has a few optional swit
 
 - `RS_BUFFER`: audio buffer size (raise it to 2048 if you hear crackles).
 - `RS_RATE`: engine rate (48000 by default, the hardware's native rate; 32000 is lighter on the CPU).
-- `RS_ROTATE180`: set to 1 if the picture is upside down on your firmware.
+- `RS_ROTATE180`: the picture is turned 180° for the Mini Plus panel by default; set it to 0 if your screen
+  shows it upside down.
 
 ## Performance
 
-The engine runs at 48 kHz. On the desktop the full engine takes about 2–4% of one 2.1 GHz Xeon core. That
-suggests roughly 15–30% of one Cortex-A7 core on the Mini Plus, plus a few percent for each MP3 decoder,
+The engine runs at 48 kHz. On the desktop it takes about 1–3% of one 2.1 GHz Xeon core (vocode and morph are
+the heaviest). That suggests roughly 10–25% of one Cortex-A7 core on the Mini Plus, plus a few percent for each MP3 decoder,
 leaving plenty of headroom on the dual-core chip. Denormals are flushed to zero in the audio thread so long
 reverb tails stay cheap.
 
@@ -224,8 +212,7 @@ reverb tails stay cheap.
   a replacement.
 - The voice detector uses simple speech features (pauses between syllables, fricative bursts). It works well on
   clear talk against dense music, but a sparse solo instrument or a busy talk show can fool it.
-- It hasn't been tested on real hardware yet. The launcher, sample rate, screen setup and button mapping
-  follow HI5 and Jaffedrone, which do run on the Mini Plus.
+- First hardware test: the screen orientation and the low volume are fixed in this version.
 
 ## Credits
 

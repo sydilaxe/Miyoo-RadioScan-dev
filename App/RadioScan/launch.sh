@@ -14,7 +14,7 @@ export RADIOSCAN_DIR="$(pwd)"
 # Optional overrides:
 #   RS_BUFFER=2048     if audio crackles
 #   RS_RATE=32000      lighter on the CPU (48000 is the hardware's native rate)
-#   RS_ROTATE180=1     if the picture is upside down on your firmware
+#   RS_ROTATE180=0     if the picture is upside down (the default turns it for the Mini Plus panel)
 ./radioscan > log.txt 2>&1
 
 rm -f /tmp/stay_awake
