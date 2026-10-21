@@ -57,9 +57,9 @@ jobs:
             gh release create "$TAG" RadioScan.zip \
               --repo "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" \
-              --title "RadioScan $TAG (test build)" \
+              --title "RadioScan $TAG" \
               --notes-file .github/release-notes.md \
-              --prerelease
+              --latest
           fi
 
   desktop:
