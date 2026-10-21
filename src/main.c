@@ -134,7 +134,9 @@ static void enable_flush_to_zero(void)
 /* Audio timing, for log.txt: a callback that comes much later than its buffer lasts means the sound dropped out
  * (a pop). Written by the audio thread, read and reported by the main thread. */
 static volatile unsigned aud_late, aud_calls;
-static volatile int aud_rt = -1;          /* real-time priority: 1 granted, 0 refused */
+static volatile int aud_rt = -1;          /* real-time priority: 1 granted, 0 refused or turned off */
+static int aud_rt_wanted = 1;             /* RS_RT=0 turns it off */
+static volatile unsigned aud_epoch;       /* bumps each time the sound device is reopened */
 static volatile double aud_first_ms;      /* when steady audio started, to count missing buffers */
 static volatile float aud_buf_ms;
 static volatile float aud_run_sum_ms;
@@ -159,7 +161,7 @@ static void audio_cb(void *ud, Uint8 *stream, int len)
         /* real-time priority, so a busy moment elsewhere (an SD card write, drawing) can't starve the sound;
          * the Miyoo runs apps as root, and where it isn't allowed nothing changes */
         struct sched_param sp = {.sched_priority = 50};
-        aud_rt = pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp) == 0;
+        aud_rt = !aud_rt_wanted ? 0 : pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp) == 0;
         ftz = 1;
     }
     static double last_start;
@@ -168,7 +170,7 @@ static void audio_cb(void *ud, Uint8 *stream, int len)
     if (aud_calls == 20) aud_first_ms = t0;
     if (last_start > 0 && aud_calls > 20) { /* skip start-up */
         float gap = (float)(t0 - last_start);
-        if (gap > buf_ms * 1.6) aud_late++;
+        if (gap > buf_ms * 2.0) aud_late++; /* longer than two buffers: the driver's cushion is nearly gone */
         if (gap > aud_worst_gap_ms) aud_worst_gap_ms = gap;
         if (gap > aud_recent_gap_ms) aud_recent_gap_ms = gap;
     }
@@ -238,11 +240,14 @@ static void audio_report(Uint32 now)
     static Uint32 last;
     static unsigned last_calls, last_late, said_rt;
     static double last_missing;
+    static unsigned last_epoch;
+    if (aud_epoch != last_epoch) { last_epoch = aud_epoch; last_missing = 0; last_calls = 0; } /* reopened */
     if (now - last < 10000) return;
     last = now;
     ev_flush();
     if (!said_rt && aud_rt >= 0) {
-        fprintf(stderr, "audio: real-time priority %s, %.1f ms per buffer\n", aud_rt ? "on" : "refused", aud_buf_ms);
+        fprintf(stderr, "audio: real-time priority %s, %.1f ms per buffer\n",
+                aud_rt ? "on" : aud_rt_wanted ? "refused" : "off (RS_RT=0)", aud_buf_ms);
         said_rt = 1;
     }
     unsigned calls = aud_calls, late = aud_late;
@@ -2122,6 +2127,45 @@ static void held_keys_update(Uint32 now)
 
 /* ================================================================== periodic logic */
 
+/* ------------------------------------------------------------------ sound device health
+ * The Miyoo's sound driver can get stuck feeding the hardware at half speed after a hiccup, and stays that way
+ * (heard as constant dropouts) until the device is reopened. Every 2 s, if the audio has fallen clearly behind
+ * real time, close and reopen it: a moment's silence instead of dropouts for the rest of the session. */
+static SDL_AudioSpec audio_spec;
+static int audio_open_ok;
+
+static void reopen_audio(void)
+{
+    SDL_CloseAudio();
+    aud_calls = 0;
+    aud_first_ms = 0;
+    aud_epoch++;
+    SDL_AudioSpec have;
+    audio_open_ok = SDL_OpenAudio(&audio_spec, &have) == 0;
+    if (audio_open_ok) SDL_PauseAudio(0);
+    else ev("  could not reopen the sound device: %s", SDL_GetError());
+}
+
+static void audio_watch(Uint32 now)
+{
+    static Uint32 last_check, last_reopen;
+    static double last_missing = -1;
+    static unsigned last_epoch;
+    if (!audio_open_ok || now - last_check < 2000) return;
+    last_check = now;
+    if (aud_epoch != last_epoch) { last_epoch = aud_epoch; last_missing = -1; }
+    if (aud_first_ms <= 0 || aud_buf_ms <= 0) return;
+    double missing = (mono_ms() - aud_first_ms) / aud_buf_ms - (aud_calls - 20);
+    if (last_missing >= 0 && missing - last_missing >= 8 && (!last_reopen || now - last_reopen > 10000)) {
+        ev("AUDIO STALLED: %.0f buffers missing in 2 s, reopening the sound device", missing - last_missing);
+        reopen_audio();
+        last_reopen = now;
+        ev("  sound device reopened");
+        return;
+    }
+    last_missing = missing;
+}
+
 /* settings as they settle (a held fader is one line, not hundreds), station state changes, late audio */
 static void log_watch(Uint32 now)
 {
@@ -2175,6 +2219,7 @@ static void log_watch(Uint32 now)
 static void logic_update(Uint32 now)
 {
     log_watch(now);
+    audio_watch(now);
     for (int o = 0; o < 2; o++)
         if (ui.pending_station[o] >= -1 && now >= ui.pending_at[o]) tune_now(o, ui.pending_station[o]);
     if (ui.scan_busy && scan_done) {
@@ -2421,6 +2466,7 @@ int main(int argc, char **argv)
     pitch_px = screen->pitch / 4;
 
     audio_rate = getenv("RS_RATE") ? atoi(getenv("RS_RATE")) : 48000;
+    if (getenv("RS_RT")) aud_rt_wanted = atoi(getenv("RS_RT")) != 0;
     int buffer = getenv("RS_BUFFER") ? atoi(getenv("RS_BUFFER")) : 2048; /* ~43 ms; the MI_AO driver keeps two */
     SDL_AudioSpec want, have;
     memset(&want, 0, sizeof want);
@@ -2433,7 +2479,7 @@ int main(int argc, char **argv)
         static const int rates[] = {0, 48000, 44100, 32000};
         for (int i = 0; i < 4 && !audio_ok; i++) {
             want.freq = i == 0 ? audio_rate : rates[i];
-            if (SDL_OpenAudio(&want, &have) == 0) { audio_ok = 1; audio_rate = have.freq; }
+            if (SDL_OpenAudio(&want, &have) == 0) { audio_ok = 1; audio_rate = have.freq; audio_spec = want; audio_spec.freq = have.freq; }
         }
         if (!audio_ok) fprintf(stderr, "SDL_OpenAudio failed: %s\n", SDL_GetError());
     }
@@ -2446,6 +2492,7 @@ int main(int argc, char **argv)
     init_common();
     if (audio_ok) SDL_PauseAudio(0);
     else if (!shot) toast("audio device unavailable");
+    audio_open_ok = audio_ok;
 
     if (shot) {
         ui.screen = SCR_EDIT;

@@ -286,7 +286,11 @@ average and slowest run against a buffer's length, and how long the screen takes
 apart from a slow driver or a sound problem. Around those lines, `log.txt` also keeps a time-stamped record of
 what you did (each button press with the screen and selection it landed on, each setting as it settles, octave
 changes, stations connecting, playing or failing) with every late audio buffer marked `AUDIO LATE` in between, so
-a dropout can be matched to the action that caused it. The record is written in one go every 10 s, so logging
+a dropout can be matched to the action that caused it.
+
+If the Miyoo's sound driver gets stuck (the audio falls clearly behind real time, 8 or more buffers in 2 s), RadioScan
+reopens the sound device by itself: a moment's silence instead of dropouts for the rest of the session. The log
+marks it `AUDIO STALLED`. `RS_RT=0` in `launch.sh` turns off the audio thread's real-time priority, for comparison. The record is written in one go every 10 s, so logging
 itself never touches the SD card on a button press.
 
 ## Limitations
