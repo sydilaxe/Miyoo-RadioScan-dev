@@ -2006,6 +2006,13 @@ static void log_press(int b)
 static void on_press(int b)
 {
     if (!ui.repeating) log_press(b);
+    if (b == B_START && ui.held[B_MENU]) { /* MENU + START, from anywhere: a clean slate */
+        synth_clean(syn);
+        ui.menu_armed = 0;
+        ui.dirty_settings = 1;
+        toast("clean slate: both voices live, no effects");
+        return;
+    }
     Uint32 now = SDL_GetTicks();
     if (ui.overlay == OV_KEYBOARD) { kb_input(b); return; }
     if (ui.overlay == OV_SCANMENU) { scan_menu_input(b); return; }
@@ -2014,7 +2021,7 @@ static void on_press(int b)
     if (b == B_MENU) {
         if (ui.menu_armed && now - ui.menu_armed < 1500) { ui.running = 0; return; }
         ui.menu_armed = now;
-        toast("press MENU again to leave");
+        toast("MENU again to leave, or hold MENU + START: clean slate");
         return;
     }
     if (ui.screen == SCR_PLAY && ui.held[B_R2] && b != B_R2) { /* sound gestures and dice */

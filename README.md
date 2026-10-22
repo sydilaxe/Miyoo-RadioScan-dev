@@ -143,6 +143,7 @@ ring is outlined, and every change shows its pattern briefly, like `A  E(5,8) >2
 | L1 / R1 | pitch down / up an octave (LOOP, WAVE and GRAIN voices) |
 | SELECT | tap tempo |
 | START | go to EDIT |
+| hold MENU + START | clean slate (any screen): both voices plain LIVE feeds, no effects |
 | MENU twice | quit |
 
 **EDIT** (RADIO, VOICES, RHYTHM, ENGINE, MIX)
@@ -155,6 +156,7 @@ ring is outlined, and every change shows its pattern briefly, like `A  E(5,8) >2
 | Y | roll the dice on the selected section |
 | SELECT | tap tempo |
 | START | back to PLAY |
+| hold MENU + START | clean slate (see below) |
 
 **MIX page:** faders in four groups: VOICE A and VOICE B (a level fader with a drive knob under it), EFFECTS
 (cross, shape, echo and space return levels) and MASTER: **limit** (how hard the mix is pushed into the limiter,
@@ -168,6 +170,12 @@ the ENGINE page still sets its character (echo feedback, reverb length, how hard
 
 **RADIO page:** A sends the selected station to voice A and B sends it to voice B. Y adds a URL, X deletes
 (press twice), L2 sets the station's kind (voice / music / sound), and R2 scans the directory.
+
+**Clean slate (hold MENU + START, from any screen):** both voices become plain LIVE feeds at unity level (no
+pitch, crush, oscillator or drive, unmuted), the gate, stutter and cross rhythms are switched off (their patterns
+are kept for when you turn them back on), and every effect goes neutral: cross-modulation, filter, EQ, drive, fold,
+crush, echo, space and width, with the MIX returns at unity and the limiter's push off. Echo and reverb tails are
+cleared. Stations, volume, tempo and sync stay. The sound fades out and back in over 10 ms, so it doesn't click.
 
 ## Wi-Fi sync
 

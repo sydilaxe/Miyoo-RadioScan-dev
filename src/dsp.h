@@ -94,6 +94,9 @@ const float *synth_params(const Synth *s);
 void synth_note_on(Synth *s, int midi_note);
 void synth_note_off(Synth *s, int midi_note);
 void synth_grab(Synth *s, int osc);                    /* fresh slice from the stream; osc 0, 1 or -1 */
+/* clean slate: both voices plain LIVE feeds at unity, rhythms off (patterns kept), every effect neutral and its
+ * tail cleared; stations, volume and tempo stay. Faded out and back in by the audio thread, so it doesn't click. */
+void synth_clean(Synth *s);
 
 /* clock: tap tempo and Wi-Fi sync (main thread; hold the audio lock around position calls) */
 void synth_tap_reset(Synth *s);

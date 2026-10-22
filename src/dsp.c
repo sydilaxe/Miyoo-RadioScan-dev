@@ -367,6 +367,9 @@ struct Synth {
     Rhythm rh[3];              /* voice A, voice B and the cross stage (SEQ_X) */
     float flash_fall;          /* per-block decay of the rhythm flashes */
     float gate_k;              /* gate smoothing per sample: ~2 ms, so no gate change clicks */
+    volatile int clean_req;    /* synth_clean asked for: fade out, reset, fade back in */
+    int clean_fading;
+    float clean_gain;
     float win[WIN_N + 1];
     float tap[TAP_COUNT][TAP_LEN];
     unsigned tap_w;
@@ -464,6 +467,7 @@ Synth *synth_create(int sample_rate)
     s->lim_pre = 1;
     s->flash_fall = expf(-BLOCK / (0.15f * s->fs));
     s->gate_k = 1.0f - expf(-1.0f / (0.002f * s->fs));
+    s->clean_gain = 1;
     s->dly_time_s = 0.3f * s->fs;
     bank_setup(s, 13);
     return s;
@@ -523,6 +527,37 @@ void synth_note_off(Synth *s, int note)
         if (s->notes[i] != note) s->notes[j++] = s->notes[i];
     s->n_notes = j;
     if (j > 0) s->last_note = s->notes[j - 1]; /* the pitch stays on the last note when keys are released */
+}
+
+void synth_clean(Synth *s) { s->clean_req = 1; }
+
+/* the clean slate itself, applied by the audio thread while the output is faded out */
+static void clean_now(Synth *s)
+{
+    static const int zero[] = {P_VOCODE, P_FM, P_RING, P_MORPH, P_CONVERSE, P_TONE, P_LOW, P_HIGH, P_DRIVE, P_FOLD,
+                               P_CRUSH, P_ECHO, P_SPACE, P_LIMIT, P_X_GATE_ON, P_X_STUT_ON};
+    static const int voice_zero[] = {P_A_MODE, P_A_TUNE, P_A_TEXTURE, P_A_DIR, P_A_FOCUS, P_A_OSC, P_A_OSC_MIX,
+                                     P_A_DRIVE, P_A_MUTE, P_A_GATE_ON, P_A_STUT_ON}; /* LIVE, FORWARD, ALL SOUND: all 0 */
+    static const int unity[] = {P_CROSS_LEVEL, P_SHAPE_LEVEL, P_ECHO_LEVEL, P_SPACE_LEVEL, P_WIDTH};
+    for (unsigned i = 0; i < sizeof zero / sizeof zero[0]; i++) synth_set_param(s, zero[i], 0);
+    for (unsigned i = 0; i < sizeof unity / sizeof unity[0]; i++) synth_set_param(s, unity[i], 1);
+    for (int o = 0; o < 2; o++) {
+        for (unsigned i = 0; i < sizeof voice_zero / sizeof voice_zero[0]; i++)
+            synth_set_param(s, voice_zero[i] + o * OSC_STRIDE, 0);
+        synth_set_param(s, P_A_LEVEL + o * OSC_STRIDE, 1);
+    }
+    /* clear what the effects were still ringing with */
+    memset(s->dly, 0, DLY_N * 2 * sizeof(float));
+    for (int i = 0; i < REV_LINES; i++) memset(s->rev[i], 0, REV_N * sizeof(float));
+    for (int i = 0; i < 4; i++) memset(s->ap[i], 0, AP_N * sizeof(float));
+    memset(s->rev_lp, 0, sizeof s->rev_lp);
+    memset(s->dly_lp, 0, sizeof s->dly_lp);
+    memset(s->filt, 0, sizeof s->filt);
+    memset(s->lo_lp, 0, sizeof s->lo_lp);
+    memset(s->hi_lp, 0, sizeof s->hi_lp);
+    memset(s->bank_a, 0, sizeof s->bank_a);
+    memset(s->bank_b, 0, sizeof s->bank_b);
+    for (int v = 0; v < 3; v++) { s->rh[v].st.n = 0; s->rh[v].st.tail = 0; s->rh[v].st.latched = 0; }
 }
 
 void synth_grab(Synth *s, int osc)
@@ -1542,6 +1577,23 @@ void synth_process(Synth *s, const float *inA, const float *inB, float *out, int
             /* last safety: straight up to 0.95, then a soft knee into full scale, so only true overs are shaped */
             out[i * 2] = soft_clip(x[0]);
             out[i * 2 + 1] = soft_clip(x[1]);
+            if (s->clean_req || s->clean_gain < 1) { /* clean slate: 10 ms out, reset, 10 ms back in */
+                float step = 1.0f / (0.01f * fs);
+                if (s->clean_req && !s->clean_fading) s->clean_fading = 1;
+                if (s->clean_fading) {
+                    s->clean_gain -= step;
+                    if (s->clean_gain <= 0) {
+                        s->clean_gain = 0;
+                        clean_now(s);
+                        s->clean_fading = 0;
+                        s->clean_req = 0;
+                    }
+                } else {
+                    s->clean_gain = s->clean_gain + step > 1 ? 1 : s->clean_gain + step;
+                }
+                out[i * 2] *= s->clean_gain;
+                out[i * 2 + 1] *= s->clean_gain;
+            }
             meter_peak(&mt[MIX_OUT], out[i * 2], out[i * 2 + 1], fall);
             s->tap[TAP_OUT][tw] = 0.5f * (out[i * 2] + out[i * 2 + 1]);
             s->tap_w++;
