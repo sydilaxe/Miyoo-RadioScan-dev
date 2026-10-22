@@ -56,6 +56,18 @@ a wavefolder, echo and space.
   - **Mute** for each voice (L2 + B on PLAY, A on the MIX page); it fades rather than cuts.
   - **Volume**, a look-ahead **limiter** (push, release, ceiling), and a leveller (**auto level**) that keeps the
     overall loudness steady so the radio comes through clearly.
+- **LFOs.** Each voice has two independent LFOs (MOD page): wave (sine, triangle, saw up, saw down, square,
+  random, drift), rate (0.02 to 20 Hz, or **Sync** to a note value from 1/32 to 16 bars), depth and destination: the voice's pitch, level, pan, size, texture, drive
+  or oscillator mix, or the shared filter, morph, fold, echo or space. Stepped waves glide a few ms so they don't
+  click. They move the values the engine plays, never your settings, so turning one off puts everything back.
+  A synced LFO takes its position from the clock the rhythms follow: tap tempo restarts it on the downbeat, Wi-Fi
+  sync locks it to the lead unit, stopping the rhythms holds it, and its random and drift values come from the bar
+  position, so synced units move together.
+- **Radio scan.** An LFO sent to RADIO SCAN tunes its voice around the station list like a wave scanner: depth
+  sets how far from the voice's own station it roams (a station or two either side at low depth, the whole list at
+  full depth), the wave sets how (sine sweeps up and down the dial, random jumps), and the voice crossfades into
+  each new station once it is playing (slower LFOs, longer fades, 0.3 to 4 s). A station that won't play is skipped.
+  With scan off the voice glides back to its own station. The station name shows `~` while it is away.
 - **Mix.** One page of faders with live meters: each voice's level and drive, how loud each effect comes back
   (cross, shape, echo, space), the limiter and the master volume.
 - **Stations.** 35 are preloaded and you can add more three ways:
@@ -96,14 +108,14 @@ The PLAY page is for performing: the two rhythms and the sound, live.
   - Attacks send out ripples.
   - In the fold circle the petals bend through the folder itself.
 
-The EDIT pages (**RADIO, VOICES, RHYTHM, ENGINE, MIX**) hold every setting. A strip at the bottom shows the voices
+The EDIT pages (**RADIO, VOICES, RHYTHM, ENGINE, MOD, MIX**) hold every setting. A strip at the bottom shows the voices
 and the five stages, with the stage you're editing ringed.
 
 | | |
 |---|---|
 | ![engine](docs/engine.png) | ![rhythm](docs/rhythm.png) |
 | ![radio](docs/radio.png) | ![sound gestures](docs/playmod.png) |
-| ![mix](docs/mix.png) | |
+| ![mix](docs/mix.png) | ![mod](docs/mod.png) |
 
 ## Install
 
@@ -143,9 +155,10 @@ ring is outlined, and every change shows its pattern briefly, like `A  E(5,8) >2
 | L1 / R1 | pitch down / up an octave (LOOP, WAVE and GRAIN voices) |
 | SELECT | tap tempo |
 | START | go to EDIT |
+| hold MENU + START | clean slate (any screen): both voices plain LIVE feeds, no effects |
 | MENU twice | quit |
 
-**EDIT** (RADIO, VOICES, RHYTHM, ENGINE, MIX)
+**EDIT** (RADIO, VOICES, RHYTHM, ENGINE, MOD, MIX)
 
 | Button | Action |
 |---|---|
@@ -155,6 +168,7 @@ ring is outlined, and every change shows its pattern briefly, like `A  E(5,8) >2
 | Y | roll the dice on the selected section |
 | SELECT | tap tempo |
 | START | back to PLAY |
+| hold MENU + START | clean slate (see below) |
 
 **MIX page:** faders in four groups: VOICE A and VOICE B (a level fader with a drive knob under it), EFFECTS
 (cross, shape, echo and space return levels) and MASTER: **limit** (how hard the mix is pushed into the limiter,
@@ -168,6 +182,12 @@ the ENGINE page still sets its character (echo feedback, reverb length, how hard
 
 **RADIO page:** A sends the selected station to voice A and B sends it to voice B. Y adds a URL, X deletes
 (press twice), L2 sets the station's kind (voice / music / sound), and R2 scans the directory.
+
+**Clean slate (hold MENU + START, from any screen):** both voices become plain LIVE feeds at unity level (no
+pitch, crush, oscillator or drive, unmuted), the gate, stutter and cross rhythms are switched off (their patterns
+are kept for when you turn them back on), and every effect goes neutral: cross-modulation, filter, EQ, drive, fold,
+crush, echo, space and width, with the MIX returns at unity, the limiter's push off and every LFO's depth at 0 (so
+radio scan stops and the voices glide home). Echo and reverb tails are cleared. Stations, volume, tempo and sync stay. The sound fades out and back in over 10 ms, so it doesn't click.
 
 ## Wi-Fi sync
 
@@ -286,7 +306,11 @@ average and slowest run against a buffer's length, and how long the screen takes
 apart from a slow driver or a sound problem. Around those lines, `log.txt` also keeps a time-stamped record of
 what you did (each button press with the screen and selection it landed on, each setting as it settles, octave
 changes, stations connecting, playing or failing) with every late audio buffer marked `AUDIO LATE` in between, so
-a dropout can be matched to the action that caused it. The record is written in one go every 10 s, so logging
+a dropout can be matched to the action that caused it.
+
+If the Miyoo's sound driver gets stuck (the audio falls clearly behind real time, 8 or more buffers in 2 s), RadioScan
+reopens the sound device by itself: a moment's silence instead of dropouts for the rest of the session. The log
+marks it `AUDIO STALLED`. `RS_RT=0` in `launch.sh` turns off the audio thread's real-time priority, for comparison. The record is written in one go every 10 s, so logging
 itself never touches the SD card on a button press.
 
 ## Limitations

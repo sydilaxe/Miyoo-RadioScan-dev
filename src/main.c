@@ -66,6 +66,11 @@ static int map_key(SDLKey k)
 
 static Synth *syn;
 static Stream *st[2];
+/* Radio scan: the station a voice is crossfading into, on its own stream. xf_state: 0 idle, 1 connecting (main
+ * thread), 2 fading (audio thread), 3 faded in (audio thread done; the main thread swaps the streams over). */
+static Stream *st_next[2];
+static volatile int xf_state[2];
+static volatile float xf_pos[2], xf_step[2];
 static int audio_rate = 48000;
 static StationList stations;
 static char app_dir[PATH_MAX], stations_path[PATH_MAX + 16], settings_path[PATH_MAX + 16];
@@ -73,8 +78,8 @@ static char app_dir[PATH_MAX], stations_path[PATH_MAX + 16], settings_path[PATH_
 enum { SCR_PLAY, SCR_EDIT };
 enum { OV_NONE, OV_KEYBOARD, OV_SCANMENU, OV_SCANRESULTS };
 enum { KB_ADD_URL, KB_ADD_NAME, KB_SEARCH };
-enum { TAB_RADIO, TAB_VOICES, TAB_RHYTHM, TAB_ENGINE, TAB_MIX, TAB_COUNT };
-static const char *const tab_names[TAB_COUNT] = {"RADIO", "VOICES", "RHYTHM", "ENGINE", "MIX"};
+enum { TAB_RADIO, TAB_VOICES, TAB_RHYTHM, TAB_ENGINE, TAB_MOD, TAB_MIX, TAB_COUNT };
+static const char *const tab_names[TAB_COUNT] = {"RADIO", "VOICES", "RHYTHM", "ENGINE", "MOD", "MIX"};
 
 #define ROW_HEADER (-3)
 
@@ -112,7 +117,26 @@ static struct {
 
 /* ================================================================== audio */
 
-static float bufA[4096], bufB[4096], bufO[4096];
+static float bufA[4096], bufB[4096], bufO[4096], bufN[4096];
+
+/* a voice's radio: its stream, or during a radio-scan switch an equal-power crossfade into the next station */
+static void read_voice(int o, float *buf, int n)
+{
+    stream_read(st[o], buf, n);
+    int x = xf_state[o];
+    if (x < 2) return;
+    stream_read(st_next[o], bufN, n);
+    if (x == 3) { memcpy(buf, bufN, sizeof(float) * n * 2); return; }
+    float g = xf_pos[o], step = xf_step[o];
+    for (int i = 0; i < n; i++) {
+        float a = cosf(g * (float)M_PI * 0.5f), b = sinf(g * (float)M_PI * 0.5f);
+        buf[i * 2] = buf[i * 2] * a + bufN[i * 2] * b;
+        buf[i * 2 + 1] = buf[i * 2 + 1] * a + bufN[i * 2 + 1] * b;
+        g = g + step > 1 ? 1 : g + step;
+    }
+    xf_pos[o] = g;
+    if (g >= 1) xf_state[o] = 3;
+}
 
 /* Treat denormal floats as zero in the audio thread: decaying reverb/filter tails otherwise
  * fall into denormals, which are extremely slow on the Cortex-A7's VFP. */
@@ -134,7 +158,9 @@ static void enable_flush_to_zero(void)
 /* Audio timing, for log.txt: a callback that comes much later than its buffer lasts means the sound dropped out
  * (a pop). Written by the audio thread, read and reported by the main thread. */
 static volatile unsigned aud_late, aud_calls;
-static volatile int aud_rt = -1;          /* real-time priority: 1 granted, 0 refused */
+static volatile int aud_rt = -1;          /* real-time priority: 1 granted, 0 refused or turned off */
+static int aud_rt_wanted = 1;             /* RS_RT=0 turns it off */
+static volatile unsigned aud_epoch;       /* bumps each time the sound device is reopened */
 static volatile double aud_first_ms;      /* when steady audio started, to count missing buffers */
 static volatile float aud_buf_ms;
 static volatile float aud_run_sum_ms;
@@ -159,7 +185,7 @@ static void audio_cb(void *ud, Uint8 *stream, int len)
         /* real-time priority, so a busy moment elsewhere (an SD card write, drawing) can't starve the sound;
          * the Miyoo runs apps as root, and where it isn't allowed nothing changes */
         struct sched_param sp = {.sched_priority = 50};
-        aud_rt = pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp) == 0;
+        aud_rt = !aud_rt_wanted ? 0 : pthread_setschedparam(pthread_self(), SCHED_FIFO, &sp) == 0;
         ftz = 1;
     }
     static double last_start;
@@ -168,7 +194,7 @@ static void audio_cb(void *ud, Uint8 *stream, int len)
     if (aud_calls == 20) aud_first_ms = t0;
     if (last_start > 0 && aud_calls > 20) { /* skip start-up */
         float gap = (float)(t0 - last_start);
-        if (gap > buf_ms * 1.6) aud_late++;
+        if (gap > buf_ms * 2.0) aud_late++; /* longer than two buffers: the driver's cushion is nearly gone */
         if (gap > aud_worst_gap_ms) aud_worst_gap_ms = gap;
         if (gap > aud_recent_gap_ms) aud_recent_gap_ms = gap;
     }
@@ -178,8 +204,8 @@ static void audio_cb(void *ud, Uint8 *stream, int len)
     int frames = len / 4;
     while (frames > 0) {
         int n = frames > 2048 ? 2048 : frames;
-        stream_read(st[0], bufA, n);
-        stream_read(st[1], bufB, n);
+        read_voice(0, bufA, n);
+        read_voice(1, bufB, n);
         synth_process(syn, bufA, bufB, bufO, n);
         static unsigned dith = 22222;
         for (int i = 0; i < n * 2; i++) { /* to 16 bits with TPDF dither: quiet tails fade into noise, not grit */
@@ -238,11 +264,14 @@ static void audio_report(Uint32 now)
     static Uint32 last;
     static unsigned last_calls, last_late, said_rt;
     static double last_missing;
+    static unsigned last_epoch;
+    if (aud_epoch != last_epoch) { last_epoch = aud_epoch; last_missing = 0; last_calls = 0; } /* reopened */
     if (now - last < 10000) return;
     last = now;
     ev_flush();
     if (!said_rt && aud_rt >= 0) {
-        fprintf(stderr, "audio: real-time priority %s, %.1f ms per buffer\n", aud_rt ? "on" : "refused", aud_buf_ms);
+        fprintf(stderr, "audio: real-time priority %s, %.1f ms per buffer\n",
+                aud_rt ? "on" : aud_rt_wanted ? "refused" : "off (RS_RT=0)", aud_buf_ms);
         said_rt = 1;
     }
     unsigned calls = aud_calls, late = aud_late;
@@ -509,8 +538,19 @@ static void save_stations(void)
 
 static int station_param(int o) { return (int)synth_get_param(syn, P_A_STATION + o * OSC_STRIDE); }
 
+/* stop a radio-scan switch in progress (a station chosen by hand wins) */
+static void scan_cancel(int o)
+{
+    if (!xf_state[o]) return;
+    SDL_LockAudio();
+    xf_state[o] = 0;
+    SDL_UnlockAudio();
+    stream_stop(st_next[o]);
+}
+
 static void tune_now(int o, int idx)
 {
+    scan_cancel(o);
     synth_set_param(syn, P_A_STATION + o * OSC_STRIDE, (float)idx);
     ui.pending_station[o] = -2;
     ui.tuned[o] = idx;
@@ -548,11 +588,14 @@ static int first_of_kind(int cat, int fallback)
 
 static void delete_station(int idx)
 {
+    scan_cancel(0);
+    scan_cancel(1);
     stations_remove(&stations, idx);
     for (int o = 0; o < 2; o++) {
         int cur = station_param(o);
         if (cur == idx) tune_now(o, -1);
         else if (cur > idx) { synth_set_param(syn, P_A_STATION + o * OSC_STRIDE, (float)(cur - 1)); ui.tuned[o] = cur - 1; }
+        if (ui.tuned[o] != station_param(o)) tune_now(o, station_param(o)); /* was scanning elsewhere: home */
     }
     save_stations();
     ui.dirty_settings = 1;
@@ -874,6 +917,12 @@ static void osc_status_line(int o, char *buf, int n)
 static const char *osc_station_name(int o)
 {
     int idx = station_param(o);
+    int t = ui.tuned[o];
+    if (t >= 0 && t != idx && t < stations.count) { /* radio scan has moved away from the voice's own station */
+        static char away[2][100];
+        snprintf(away[o], sizeof away[o], "~%s", stations.items[t].name);
+        return away[o];
+    }
     if (ui.tuned[o] == -1 && stream_state(st[o]) != ST_IDLE) return "(trying a scan result)";
     if (idx >= 0 && idx < stations.count) return stations.items[idx].name;
     return "no station";
@@ -1447,7 +1496,7 @@ static void draw_play(void)
 
 /* ================================================================== EDIT screen */
 
-static int tab_page(int tab) { return tab - 1; } /* VOICES, RHYTHM, ENGINE, MIX -> PAGE_* */
+static int tab_page(int tab) { return tab - 1; } /* VOICES, RHYTHM, ENGINE, MOD, MIX -> PAGE_* */
 
 /* rows for the current tab; ids >= 0 are params, ROW_HEADER rows carry a section name */
 static int build_rows(int tab, int *rows, const char **hdrs)
@@ -1468,7 +1517,7 @@ static int build_rows(int tab, int *rows, const char **hdrs)
 static void draw_tabs(void)
 {
     for (int i = 0; i < TAB_COUNT; i++) {
-        int x = 30 + i * 124;
+        int x = 30 + i * 104;
         int sel = ui.tab == i;
         if (sel) disc(x, 16, 7, C_LEAF);
         else circle(x, 16, 7, C_DIM);
@@ -1568,6 +1617,14 @@ static void draw_param_page(void)
         if (rows[i] == ROW_HEADER) {
             text(x, y + 2, hdrs[i], C_LEAF, 0);
             fill(x + (int)strlen(hdrs[i]) * FONT_W + 10, y + 11, 636 - x - (int)strlen(hdrs[i]) * FONT_W - 20, 1, C_PANEL2);
+            if (!strncmp(hdrs[i], "LFO ", 4)) { /* the LFO moving, live: a dot riding a short track */
+                int o = hdrs[i][4] == 'B', k = hdrs[i][5] == '2', cx = 560, w = 56;
+                int on = (int)synth_get_param(syn, LFO_PARAM(o, k, DEST)) != LFO_OFF &&
+                         synth_get_param(syn, LFO_PARAM(o, k, DEPTH)) > 0.001f;
+                fill(cx - w, y + 8, 2 * w, 7, C_BG);
+                fill(cx - w, y + 11, 2 * w, 1, on ? C_DIM : C_PANEL2);
+                disc(cx + (int)(synth_lfo_value(syn, o, k) * w), y + 11, 4, on ? osc_col(o) : C_PANEL2);
+            }
             continue;
         }
         if (i == *sel) fill(x - 10, y - 2, 640 - x, 22, C_SEL);
@@ -2001,6 +2058,13 @@ static void log_press(int b)
 static void on_press(int b)
 {
     if (!ui.repeating) log_press(b);
+    if (b == B_START && ui.held[B_MENU]) { /* MENU + START, from anywhere: a clean slate */
+        synth_clean(syn);
+        ui.menu_armed = 0;
+        ui.dirty_settings = 1;
+        toast("clean slate: both voices live, no effects");
+        return;
+    }
     Uint32 now = SDL_GetTicks();
     if (ui.overlay == OV_KEYBOARD) { kb_input(b); return; }
     if (ui.overlay == OV_SCANMENU) { scan_menu_input(b); return; }
@@ -2009,7 +2073,7 @@ static void on_press(int b)
     if (b == B_MENU) {
         if (ui.menu_armed && now - ui.menu_armed < 1500) { ui.running = 0; return; }
         ui.menu_armed = now;
-        toast("press MENU again to leave");
+        toast("MENU again to leave, or hold MENU + START: clean slate");
         return;
     }
     if (ui.screen == SCR_PLAY && ui.held[B_R2] && b != B_R2) { /* sound gestures and dice */
@@ -2122,6 +2186,45 @@ static void held_keys_update(Uint32 now)
 
 /* ================================================================== periodic logic */
 
+/* ------------------------------------------------------------------ sound device health
+ * The Miyoo's sound driver can get stuck feeding the hardware at half speed after a hiccup, and stays that way
+ * (heard as constant dropouts) until the device is reopened. Every 2 s, if the audio has fallen clearly behind
+ * real time, close and reopen it: a moment's silence instead of dropouts for the rest of the session. */
+static SDL_AudioSpec audio_spec;
+static int audio_open_ok;
+
+static void reopen_audio(void)
+{
+    SDL_CloseAudio();
+    aud_calls = 0;
+    aud_first_ms = 0;
+    aud_epoch++;
+    SDL_AudioSpec have;
+    audio_open_ok = SDL_OpenAudio(&audio_spec, &have) == 0;
+    if (audio_open_ok) SDL_PauseAudio(0);
+    else ev("  could not reopen the sound device: %s", SDL_GetError());
+}
+
+static void audio_watch(Uint32 now)
+{
+    static Uint32 last_check, last_reopen;
+    static double last_missing = -1;
+    static unsigned last_epoch;
+    if (!audio_open_ok || now - last_check < 2000) return;
+    last_check = now;
+    if (aud_epoch != last_epoch) { last_epoch = aud_epoch; last_missing = -1; }
+    if (aud_first_ms <= 0 || aud_buf_ms <= 0) return;
+    double missing = (mono_ms() - aud_first_ms) / aud_buf_ms - (aud_calls - 20);
+    if (last_missing >= 0 && missing - last_missing >= 8 && (!last_reopen || now - last_reopen > 10000)) {
+        ev("AUDIO STALLED: %.0f buffers missing in 2 s, reopening the sound device", missing - last_missing);
+        reopen_audio();
+        last_reopen = now;
+        ev("  sound device reopened");
+        return;
+    }
+    last_missing = missing;
+}
+
 /* settings as they settle (a held fader is one line, not hundreds), station state changes, late audio */
 static void log_watch(Uint32 now)
 {
@@ -2172,9 +2275,74 @@ static void log_watch(Uint32 now)
     aud_recent_gap_ms = 0;
 }
 
+/* Radio scan: a voice's LFO set to RADIO SCAN picks stations from a window of the list around the voice's own
+ * station (depth: from a station or two either side up to the whole list), and the voice crossfades into each one
+ * once it is playing. With scan off it glides back home. One switch at a time; a station that fails is skipped. */
+static void radio_scan(Uint32 now)
+{
+    static int target_of[2], bad[2] = {-1, -1};
+    static Uint32 started[2], bad_until[2], next_try[2];
+    int n = stations.count;
+    for (int o = 0; o < 2; o++) {
+        float v = 0, depth = 0, rate = 0;
+        for (int k = 0; k < 2; k++)
+            if ((int)synth_get_param(syn, LFO_PARAM(o, k, DEST)) == LFO_SCAN) {
+                float d = synth_get_param(syn, LFO_PARAM(o, k, DEPTH));
+                if (d > depth) { depth = d; v = synth_lfo_value(syn, o, k); rate = synth_lfo_hz(syn, o, k); }
+            }
+        int base = station_param(o), scanning = depth > 0.01f;
+        if (base < 0 || base >= n || n < 2 || ui.pending_station[o] >= -1) continue;
+        int target = base;
+        if (scanning) {
+            int span = (int)lroundf(depth * (n - 1) * 0.5f);
+            if (span < 1) span = 1;
+            target = ((base + (int)lroundf(v * span)) % n + n) % n;
+        }
+        switch (xf_state[o]) {
+        case 0:
+            if (target == ui.tuned[o] || now < next_try[o] || (target == bad[o] && now < bad_until[o])) break;
+            stream_play(st_next[o], stations.items[target].url);
+            target_of[o] = target;
+            started[o] = now;
+            xf_state[o] = 1;
+            ev("  voice %c %s %s", 'A' + o, scanning ? "scans to" : "returns to", stations.items[target].name);
+            break;
+        case 1:
+            if (stream_state(st_next[o]) == ST_PLAYING && stream_buffer_seconds(st_next[o]) > 1.0f) {
+                float fade = scanning ? 0.6f / rate : 1.5f; /* slower scans, longer fades */
+                fade = fade < 0.3f ? 0.3f : fade > 4.0f ? 4.0f : fade;
+                xf_pos[o] = 0;
+                xf_step[o] = 1.0f / (fade * audio_rate);
+                xf_state[o] = 2;
+            } else if (stream_state(st_next[o]) == ST_ERROR || now - started[o] > 12000) {
+                ev("  voice %c scan skips %s (it did not play)", 'A' + o, stations.items[target_of[o]].name);
+                stream_stop(st_next[o]);
+                bad[o] = target_of[o];
+                bad_until[o] = now + 60000;
+                xf_state[o] = 0;
+            }
+            break;
+        case 3: { /* faded in: the new station becomes the voice's stream */
+            SDL_LockAudio();
+            Stream *t = st[o];
+            st[o] = st_next[o];
+            st_next[o] = t;
+            xf_state[o] = 0;
+            SDL_UnlockAudio();
+            stream_stop(st_next[o]);
+            ui.tuned[o] = target_of[o];
+            next_try[o] = now + 250;
+            break;
+        }
+        }
+    }
+}
+
 static void logic_update(Uint32 now)
 {
     log_watch(now);
+    radio_scan(now);
+    audio_watch(now);
     for (int o = 0; o < 2; o++)
         if (ui.pending_station[o] >= -1 && now >= ui.pending_at[o]) tune_now(o, ui.pending_station[o]);
     if (ui.scan_busy && scan_done) {
@@ -2294,6 +2462,8 @@ static int offline_render(int argc, char **argv)
     syn = synth_create(audio_rate);
     st[0] = stream_create(audio_rate);
     st[1] = stream_create(audio_rate);
+    st_next[0] = stream_create(audio_rate);
+    st_next[1] = stream_create(audio_rate);
     init_common();
     for (int i = 4; i < argc; i++) {
         char k[64];
@@ -2347,6 +2517,8 @@ static int offline_render(int argc, char **argv)
     }
     stream_destroy(st[0]);
     stream_destroy(st[1]);
+    stream_destroy(st_next[0]);
+    stream_destroy(st_next[1]);
     synth_destroy(syn);
     return 0;
 }
@@ -2421,6 +2593,7 @@ int main(int argc, char **argv)
     pitch_px = screen->pitch / 4;
 
     audio_rate = getenv("RS_RATE") ? atoi(getenv("RS_RATE")) : 48000;
+    if (getenv("RS_RT")) aud_rt_wanted = atoi(getenv("RS_RT")) != 0;
     int buffer = getenv("RS_BUFFER") ? atoi(getenv("RS_BUFFER")) : 2048; /* ~43 ms; the MI_AO driver keeps two */
     SDL_AudioSpec want, have;
     memset(&want, 0, sizeof want);
@@ -2433,7 +2606,7 @@ int main(int argc, char **argv)
         static const int rates[] = {0, 48000, 44100, 32000};
         for (int i = 0; i < 4 && !audio_ok; i++) {
             want.freq = i == 0 ? audio_rate : rates[i];
-            if (SDL_OpenAudio(&want, &have) == 0) { audio_ok = 1; audio_rate = have.freq; }
+            if (SDL_OpenAudio(&want, &have) == 0) { audio_ok = 1; audio_rate = have.freq; audio_spec = want; audio_spec.freq = have.freq; }
         }
         if (!audio_ok) fprintf(stderr, "SDL_OpenAudio failed: %s\n", SDL_GetError());
     }
@@ -2442,10 +2615,13 @@ int main(int argc, char **argv)
     syn = synth_create(audio_rate);
     st[0] = stream_create(audio_rate);
     st[1] = stream_create(audio_rate);
+    st_next[0] = stream_create(audio_rate);
+    st_next[1] = stream_create(audio_rate);
     if (!syn || !st[0] || !st[1]) { fprintf(stderr, "out of memory\n"); return 1; }
     init_common();
     if (audio_ok) SDL_PauseAudio(0);
     else if (!shot) toast("audio device unavailable");
+    audio_open_ok = audio_ok;
 
     if (shot) {
         ui.screen = SCR_EDIT;
@@ -2456,6 +2632,7 @@ int main(int argc, char **argv)
         if (!strcmp(shot_view, "rhythm")) ui.tab = TAB_RHYTHM;
         if (!strcmp(shot_view, "rhythmx")) { ui.tab = TAB_RHYTHM; ui.sel[TAB_RHYTHM] = 99; }
         if (!strcmp(shot_view, "engine")) ui.tab = TAB_ENGINE;
+        if (!strcmp(shot_view, "mod")) ui.tab = TAB_MOD;
         if (!strcmp(shot_view, "mix")) ui.tab = TAB_MIX;
         if (!strcmp(shot_view, "kb")) open_keyboard(KB_ADD_URL, "http://ice1.somafm.com/");
         if (!strcmp(shot_view, "scan")) ui.overlay = OV_SCANMENU;
@@ -2475,6 +2652,8 @@ int main(int argc, char **argv)
         SDL_SaveBMP(screen, shot);
         stream_destroy(st[0]);
         stream_destroy(st[1]);
+        stream_destroy(st_next[0]);
+        stream_destroy(st_next[1]);
         SDL_Quit();
         return 0;
     }
@@ -2527,6 +2706,8 @@ int main(int argc, char **argv)
     SDL_CloseAudio();
     stream_destroy(st[0]);
     stream_destroy(st[1]);
+    stream_destroy(st_next[0]);
+    stream_destroy(st_next[1]);
     synth_destroy(syn);
     SDL_Quit();
     return 0;

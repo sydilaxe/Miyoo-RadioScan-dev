@@ -15,6 +15,12 @@
 static const char *const osc_modes[] = {"LIVE", "LOOP", "WAVE", "GRAIN", NULL};
 static const char *const focuses[] = {"ALL SOUND", "VOICES ONLY", "MUSIC ONLY", NULL};
 static const char *const directions[] = {"FORWARD", "REVERSE", "BOTH", NULL};
+static const char *const lfo_waves[] = {"SINE", "TRIANGLE", "SAW UP", "SAW DOWN", "SQUARE", "RANDOM", "DRIFT", NULL};
+static const char *const lfo_syncs[] = {"FREE", "1/32", "1/16", "1/8T", "1/8", "1/8.", "1/4T", "1/4", "1/4.", "1/2",
+                                        "1 BAR", "2 BARS", "4 BARS", "8 BARS", "16 BARS", NULL};
+static const double lfo_sync_beats[] = {0, 0.125, 0.25, 1.0 / 3, 0.5, 0.75, 2.0 / 3, 1, 1.5, 2, 4, 8, 16, 32, 64};
+static const char *const lfo_dests[] = {"OFF", "PITCH", "LEVEL", "PAN", "SIZE", "TEXTURE", "DRIVE", "OSC MIX",
+                                        "FILTER", "MORPH", "FOLD", "ECHO", "SPACE", "RADIO SCAN", NULL};
 static const char *const stut_modes[] = {"REPEAT", "REVERSE", "RANDOM", "PITCH", "DROPOUT", "SCATTER", NULL};
 const char *const category_names[] = {"ANY", "VOICE", "MUSIC", "SOUND", NULL};
 static const char *const offon[] = {"OFF", "ON", NULL};
@@ -29,7 +35,7 @@ static const char *const rates[] = {"1/32", "1/16", "1/8T", "1/8", "1/8.", "5/16
                                     "5/8", "1/2", "1 BAR", "2 BARS", "4 BARS", "5 BARS", NULL};
 static const float rate_beats[] = {0.125f, 0.25f, 1.0f / 3, 0.5f, 0.75f, 1.25f, 2.0f / 3, 1, 1.5f, 2.5f, 2, 4, 8, 16, 20};
 
-const char *const page_names[PAGE_COUNT] = {"VOICES", "RHYTHM", "ENGINE", "MIX"};
+const char *const page_names[PAGE_COUNT] = {"VOICES", "RHYTHM", "ENGINE", "MOD", "MIX"};
 
 int euclid_hit(int steps, int pulses, int rotate, int step)
 {
@@ -58,6 +64,13 @@ int euclid_hit(int steps, int pulses, int rotate, int step)
     [P_##X##_STUT_MODE] = {x "_stut_mode", "Stutter Mode", PAGE_RHYTHM, 0, 5, 0, 1, 0, "", stut_modes},          \
     [P_##X##_STUT_CHANCE] = {x "_stut_chance", "Stutter Chance", PAGE_RHYTHM, 0, 1, 1, 0.05f, 0, "", NULL}
 
+#define LFO_PARAMS(X, x, n, rate)                                                                              \
+    [P_##X##_LFO##n##_WAVE] = {x "_lfo" #n "_wave", "Wave", PAGE_MOD, 0, LFO_WAVES - 1, 0, 1, 0, "", lfo_waves}, \
+    [P_##X##_LFO##n##_RATE] = {x "_lfo" #n "_rate", "Rate", PAGE_MOD, 0.02f, 20, rate, 1.1f, 1, "hz", NULL}, \
+    [P_##X##_LFO##n##_SYNC] = {x "_lfo" #n "_sync", "Sync", PAGE_MOD, 0, 14, 0, 1, 0, "", lfo_syncs},           \
+    [P_##X##_LFO##n##_DEPTH] = {x "_lfo" #n "_depth", "Depth", PAGE_MOD, 0, 1, 0, 0.02f, 0, "", NULL},      \
+    [P_##X##_LFO##n##_DEST] = {x "_lfo" #n "_dest", "Destination", PAGE_MOD, 0, LFO_DESTS - 1, 0, 1, 0, "", lfo_dests}
+
 #define VOICE_PARAMS(X, x, mode, size, tex, lvl, pan, steps, pulses, length)                                \
     [P_##X##_STATION] = {x "_station", "Station", PAGE_VOICES, -1, 511, -1, 1, 0, "station", NULL},              \
     [P_##X##_MODE] = {x "_engine", "Engine", PAGE_VOICES, 0, 3, mode, 1, 0, "", osc_modes},                      \
@@ -72,6 +85,7 @@ int euclid_hit(int steps, int pulses, int rotate, int step)
     [P_##X##_DRIVE] = {x "_drive", "Drive", PAGE_MIX, 0, 1, 0, 0.02f, 0, "", NULL},                              \
     [P_##X##_OSC] = {x "_osc", "Oscillator", PAGE_VOICES, 0, 4, 0, 1, 0, "", osc_waves},                         \
     [P_##X##_OSC_MIX] = {x "_osc_mix", "Osc Mix", PAGE_VOICES, 0, 1, 0, 0.02f, 0, "", NULL},                     \
+    LFO_PARAMS(X, x, 1, 0.5f), LFO_PARAMS(X, x, 2, 0.13f),                                                      \
     RHYTHM_PARAMS(X, x, 1, steps, pulses, length, 0, 0.25f, 3, 3)
 
 const ParamInfo param_info[P_COUNT] = {
@@ -120,6 +134,8 @@ const char *param_section(int id)
     int o = osc_of(id);
     if (o >= 0) {
         if (osc_field(id) >= P_A_STUT_ON) return o ? "STUTTER B" : "STUTTER A";
+        if (osc_field(id) >= P_A_LFO2_WAVE && osc_field(id) <= P_A_LFO2_DEST) return o ? "LFO B2" : "LFO A2";
+        if (osc_field(id) >= P_A_LFO1_WAVE && osc_field(id) <= P_A_LFO1_DEST) return o ? "LFO B1" : "LFO A1";
         if (osc_field(id) >= P_A_GATE_ON) return o ? "RHYTHM B" : "RHYTHM A";
         return o ? "VOICE B" : "VOICE A";
     }
@@ -216,6 +232,9 @@ void param_format_ctx(int id, const float *params, char *buf, int n)
     } else if (!strcmp(p->unit, "pan")) {
         if (fabsf(v) < 0.01f) snprintf(buf, n, "centre");
         else snprintf(buf, n, "%s %.0f%%", v < 0 ? "left" : "right", fabsf(v) * 100);
+    } else if (!strcmp(p->unit, "hz")) { /* an LFO rate; its Sync setting follows it */
+        if ((int)params[id + 1] > 0) snprintf(buf, n, "(follows the tempo)");
+        else snprintf(buf, n, v < 1 ? "%.2f Hz (%.1f s)" : "%.1f Hz", v, 1.0f / v);
     } else if (!strcmp(p->unit, "ms")) {
         snprintf(buf, n, v < 10 ? "%.1f ms" : "%.0f ms", v);
     } else if (!strcmp(p->unit, "limit")) { /* how hard the mix is pushed into the limiter, 0 .. +18 dB */
@@ -323,7 +342,8 @@ typedef struct {
 
 struct Synth {
     float fs;
-    float p[P_COUNT];
+    float p[P_COUNT];          /* the values the engine plays: the player's, plus what the LFOs add */
+    float u[P_COUNT];          /* the player's values */
     Osc osc[2];
     unsigned rng;
 
@@ -333,7 +353,7 @@ struct Synth {
     double beat_pos, clock_rate;
     int running;
 
-    Svf filt[2];
+    Svf filt[2], filt_hp[2];   /* the filter: a high-pass into a low-pass, per channel */
     /* cross-modulation filterbank (vocode and morph) */
     SvfCoef bank_c[BANDS];
     Svf bank_a[BANDS], bank_b[BANDS];
@@ -365,8 +385,17 @@ struct Synth {
     int lim_la, lim_cnt;
     float lim_hold, lim_g, lim_pre, lim_att;
     Rhythm rh[3];              /* voice A, voice B and the cross stage (SEQ_X) */
+    /* LFOs: two per voice */
+    double lfo_ph[2][2];
+    float lfo_val[2][2], lfo_from[2][2], lfo_to[2][2];
+    int lfo_moded[P_COUNT];    /* ids the LFOs changed last block, to put back */
+    int n_moded;
+    unsigned lfo_rng;
     float flash_fall;          /* per-block decay of the rhythm flashes */
     float gate_k;              /* gate smoothing per sample: ~2 ms, so no gate change clicks */
+    volatile int clean_req;    /* synth_clean asked for: fade out, reset, fade back in */
+    int clean_fading;
+    float clean_gain;
     float win[WIN_N + 1];
     float tap[TAP_COUNT][TAP_LEN];
     unsigned tap_w;
@@ -445,7 +474,7 @@ Synth *synth_create(int sample_rate)
         ok = ok && r->st.buf && r->st.latch;
     }
     if (!ok) { synth_destroy(s); return NULL; }
-    for (int i = 0; i < P_COUNT; i++) s->p[i] = param_info[i].def;
+    for (int i = 0; i < P_COUNT; i++) s->p[i] = s->u[i] = param_info[i].def;
     for (int i = 0; i <= WIN_N; i++) { float w = sinf((float)M_PI * i / WIN_N); s->win[i] = w * w; }
     s->rng = 0x5eed5u;
     s->last_note = 60;
@@ -464,6 +493,7 @@ Synth *synth_create(int sample_rate)
     s->lim_pre = 1;
     s->flash_fall = expf(-BLOCK / (0.15f * s->fs));
     s->gate_k = 1.0f - expf(-1.0f / (0.002f * s->fs));
+    s->clean_gain = 1;
     s->dly_time_s = 0.3f * s->fs;
     bank_setup(s, 13);
     return s;
@@ -488,9 +518,9 @@ void synth_destroy(Synth *s)
     free(s);
 }
 
-void synth_set_param(Synth *s, int id, float v) { s->p[id] = param_clamp(id, v); }
-float synth_get_param(const Synth *s, int id) { return s->p[id]; }
-const float *synth_params(const Synth *s) { return s->p; }
+void synth_set_param(Synth *s, int id, float v) { s->p[id] = s->u[id] = param_clamp(id, v); }
+float synth_get_param(const Synth *s, int id) { return s->u[id]; }
+const float *synth_params(const Synth *s) { return s->u; }
 float synth_gate_value(const Synth *s, int o) { return s->rh[o].gate; }
 float synth_speechness(const Synth *s, int o) { return s->osc[o].vad.speech; }
 int synth_voice_state(const Synth *s, int o) { return s->osc[o].vad.state; }
@@ -498,6 +528,22 @@ float synth_osc_level(const Synth *s, int o) { return s->osc[o].level; }
 int synth_seq_step(const Synth *s, int q) { return q >= SEQ_SA ? s->rh[q - SEQ_SA].st.idx : s->rh[q].idx; }
 float synth_seq_flash(const Synth *s, int q) { return q >= SEQ_SA ? s->rh[q - SEQ_SA].st.flash : s->rh[q].flash; }
 float synth_cross_gate(const Synth *s) { return s->rh[SEQ_X].gate; }
+float synth_lfo_value(const Synth *s, int o, int k) { return s->lfo_val[o][k]; }
+float synth_lfo_hz(const Synth *s, int o, int k)
+{
+    int sync = (int)s->u[LFO_PARAM(o, k, SYNC)];
+    return sync > 0 ? (float)(s->u[P_BPM] / 60.0 / lfo_sync_beats[sync]) : s->u[LFO_PARAM(o, k, RATE)];
+}
+
+/* a random value in -1..1 for a clock-locked LFO's cycle: the same on every unit following the same clock */
+static float lfo_cycle_random(long cycle, int o, int k)
+{
+    unsigned h = (unsigned)cycle * 2654435761u ^ (unsigned)(o * 2 + k + 1) * 40503u;
+    h ^= h >> 15;
+    h *= 2246822519u;
+    h ^= h >> 13;
+    return (float)(h >> 8) / 8388608.0f - 1.0f;
+}
 float synth_mix_meter(const Synth *s, int ch) { return ch >= 0 && ch < MIX_COUNT ? s->meter[ch] : 0; }
 int synth_floor(const Synth *s) { return s->p[P_CONVERSE] > 0.01f ? s->floor_holder : -1; }
 
@@ -523,6 +569,39 @@ void synth_note_off(Synth *s, int note)
         if (s->notes[i] != note) s->notes[j++] = s->notes[i];
     s->n_notes = j;
     if (j > 0) s->last_note = s->notes[j - 1]; /* the pitch stays on the last note when keys are released */
+}
+
+void synth_clean(Synth *s) { s->clean_req = 1; }
+
+/* the clean slate itself, applied by the audio thread while the output is faded out */
+static void clean_now(Synth *s)
+{
+    static const int zero[] = {P_VOCODE, P_FM, P_RING, P_MORPH, P_CONVERSE, P_TONE, P_LOW, P_HIGH, P_DRIVE, P_FOLD,
+                               P_CRUSH, P_ECHO, P_SPACE, P_LIMIT, P_X_GATE_ON, P_X_STUT_ON};
+    static const int voice_zero[] = {P_A_MODE, P_A_TUNE, P_A_TEXTURE, P_A_DIR, P_A_FOCUS, P_A_OSC, P_A_OSC_MIX,
+                                     P_A_DRIVE, P_A_MUTE, P_A_GATE_ON, P_A_STUT_ON}; /* LIVE, FORWARD, ALL SOUND: all 0 */
+    static const int unity[] = {P_CROSS_LEVEL, P_SHAPE_LEVEL, P_ECHO_LEVEL, P_SPACE_LEVEL, P_WIDTH};
+    for (unsigned i = 0; i < sizeof zero / sizeof zero[0]; i++) synth_set_param(s, zero[i], 0);
+    for (unsigned i = 0; i < sizeof unity / sizeof unity[0]; i++) synth_set_param(s, unity[i], 1);
+    for (int o = 0; o < 2; o++) {
+        for (unsigned i = 0; i < sizeof voice_zero / sizeof voice_zero[0]; i++)
+            synth_set_param(s, voice_zero[i] + o * OSC_STRIDE, 0);
+        synth_set_param(s, P_A_LEVEL + o * OSC_STRIDE, 1);
+        for (int k = 0; k < 2; k++) synth_set_param(s, LFO_PARAM(o, k, DEPTH), 0); /* LFOs (and radio scan) off */
+    }
+    /* clear what the effects were still ringing with */
+    memset(s->dly, 0, DLY_N * 2 * sizeof(float));
+    for (int i = 0; i < REV_LINES; i++) memset(s->rev[i], 0, REV_N * sizeof(float));
+    for (int i = 0; i < 4; i++) memset(s->ap[i], 0, AP_N * sizeof(float));
+    memset(s->rev_lp, 0, sizeof s->rev_lp);
+    memset(s->dly_lp, 0, sizeof s->dly_lp);
+    memset(s->filt, 0, sizeof s->filt);
+    memset(s->filt_hp, 0, sizeof s->filt_hp);
+    memset(s->lo_lp, 0, sizeof s->lo_lp);
+    memset(s->hi_lp, 0, sizeof s->hi_lp);
+    memset(s->bank_a, 0, sizeof s->bank_a);
+    memset(s->bank_b, 0, sizeof s->bank_b);
+    for (int v = 0; v < 3; v++) { s->rh[v].st.n = 0; s->rh[v].st.tail = 0; s->rh[v].st.latched = 0; }
 }
 
 void synth_grab(Synth *s, int osc)
@@ -613,7 +692,7 @@ void synth_randomize(Synth *s, const int *ids, int n, float amount)
         const ParamInfo *p = &param_info[id];
         float lo, hi;
         dice_range(id, &lo, &hi);
-        float v = s->p[id];
+        float v = s->u[id];
         if (p->choices || !strcmp(p->unit, "int")) {
             if (amount < 0.5f) continue; /* gentle mutation leaves switches alone */
             v = floorf(rand_in(s, lo, hi + 0.999f, 0));
@@ -625,13 +704,14 @@ void synth_randomize(Synth *s, const int *ids, int n, float amount)
             if (v < lo) v = lo;
             if (v > hi) v = hi;
         }
-        s->p[id] = param_clamp(id, v);
+        s->u[id] = param_clamp(id, v);
     }
     for (int q = 0; q < SEQ_COUNT; q++) { /* keep pulses <= steps and rotation inside the pattern */
-        float *st = &s->p[SEQ_PARAM(q, 1)];
+        float *st = &s->u[SEQ_PARAM(q, 1)];
         if (st[1] > st[0]) st[1] = floorf(1 + rnd01(s) * (st[0] - 1));
         if (st[2] >= st[0]) st[2] = floorf(rnd01(s) * st[0]);
     }
+    memcpy(s->p, s->u, sizeof s->p);
 }
 
 void synth_dice(Synth *s, int which)
@@ -651,34 +731,35 @@ void synth_dice(Synth *s, int which)
         static const float lo[] = {50, 80, 1, 15}, hi[] = {500, 1500, 25, 350};
         static const float tunes[] = {-12, -7, -5, 0, 0, 0, 5, 7, 12};
         for (int o = 0; o < 2; o++) {
-            int m = (int)s->p[P_A_MODE + o * OSC_STRIDE];
-            s->p[P_A_SIZE + o * OSC_STRIDE] = rand_in(s, lo[m], hi[m], 1);
-            s->p[P_A_TUNE + o * OSC_STRIDE] = tunes[(int)(rnd01(s) * 9) % 9];
-            if (m == OSC_LIVE && rnd01(s) < 0.7f) s->p[P_A_TEXTURE + o * OSC_STRIDE] = 0;
-            if (rnd01(s) < 0.7f) s->p[P_A_DIR + o * OSC_STRIDE] = DIR_FORWARD; /* reversing stays occasional */
+            int m = (int)s->u[P_A_MODE + o * OSC_STRIDE];
+            s->u[P_A_SIZE + o * OSC_STRIDE] = rand_in(s, lo[m], hi[m], 1);
+            s->u[P_A_TUNE + o * OSC_STRIDE] = tunes[(int)(rnd01(s) * 9) % 9];
+            if (m == OSC_LIVE && rnd01(s) < 0.7f) s->u[P_A_TEXTURE + o * OSC_STRIDE] = 0;
+            if (rnd01(s) < 0.7f) s->u[P_A_DIR + o * OSC_STRIDE] = DIR_FORWARD; /* reversing stays occasional */
         }
-        if (rnd01(s) < 0.4f) s->p[P_TONE] = 0;
-        if (rnd01(s) < 0.5f) s->p[P_FOLD] = 0;
+        if (rnd01(s) < 0.4f) s->u[P_TONE] = 0;
+        if (rnd01(s) < 0.5f) s->u[P_FOLD] = 0;
         for (int o = 0; o < 2; o++)
-            if (rnd01(s) < 0.65f) s->p[P_A_OSC + o * OSC_STRIDE] = 0; /* oscillators stay occasional */
-        if (rnd01(s) < 0.6f) s->p[P_VOCODE] = VOC_OFF;
-        if (rnd01(s) < 0.6f) s->p[P_FM] = 0;
-        if (rnd01(s) < 0.6f) s->p[P_RING] = 0;
-        if (rnd01(s) < 0.6f) s->p[P_MORPH] = 0;
-        if (rnd01(s) < 0.7f) s->p[P_CONVERSE] = 0;
+            if (rnd01(s) < 0.65f) s->u[P_A_OSC + o * OSC_STRIDE] = 0; /* oscillators stay occasional */
+        if (rnd01(s) < 0.6f) s->u[P_VOCODE] = VOC_OFF;
+        if (rnd01(s) < 0.6f) s->u[P_FM] = 0;
+        if (rnd01(s) < 0.6f) s->u[P_RING] = 0;
+        if (rnd01(s) < 0.6f) s->u[P_MORPH] = 0;
+        if (rnd01(s) < 0.7f) s->u[P_CONVERSE] = 0;
     }
     if (which == DICE_RHYTHM) {
         for (int o = 0; o < 2; o++) {
-            s->p[RHYTHM_P(o, GATE_ON)] = rnd01(s) < 0.85f ? 1 : 0;
-            s->p[RHYTHM_P(o, STUT_ON)] = rnd01(s) < 0.4f ? 1 : 0; /* stutters stay occasional */
+            s->u[RHYTHM_P(o, GATE_ON)] = rnd01(s) < 0.85f ? 1 : 0;
+            s->u[RHYTHM_P(o, STUT_ON)] = rnd01(s) < 0.4f ? 1 : 0; /* stutters stay occasional */
         }
         for (int v = 0; v <= SEQ_X; v++) /* a few ratcheted steps, not most of them */
-            if (s->p[RHYTHM_P(v, STUT_PULSES)] > 3) s->p[RHYTHM_P(v, STUT_PULSES)] = 1 + floorf(rnd01(s) * 3);
+            if (s->u[RHYTHM_P(v, STUT_PULSES)] > 3) s->u[RHYTHM_P(v, STUT_PULSES)] = 1 + floorf(rnd01(s) * 3);
     }
     if (which == DICE_SOUND) {
-        if (rnd01(s) < 0.6f) s->p[P_DRIVE] = 0;
-        if (rnd01(s) < 0.7f) s->p[P_CRUSH] = 0;
+        if (rnd01(s) < 0.6f) s->u[P_DRIVE] = 0;
+        if (rnd01(s) < 0.7f) s->u[P_CRUSH] = 0;
     }
+    memcpy(s->p, s->u, sizeof s->p);
 }
 
 /* ------------------------------------------------------------------ voice engines */
@@ -1205,6 +1286,90 @@ float synth_fold_preview(float x, float fold)
 static inline void meter_hit(float *m, float v, float fall) { *m = v > *m ? v : *m * fall; }
 static inline void meter_peak(float *m, float l, float r, float fall) { meter_hit(m, fmaxf(fabsf(l), fabsf(r)), fall); }
 
+/* ------------------------------------------------------------------ LFOs */
+
+/* advance one LFO by n samples; returns -1..1 */
+static float lfo_tick(Synth *s, int o, int k, int n)
+{
+    int wave = (int)s->u[LFO_PARAM(o, k, WAVE)], sync = (int)s->u[LFO_PARAM(o, k, SYNC)];
+    double ph;
+    int wrapped;
+    if (sync > 0) { /* locked to the clock: the phase comes from the beat position (tap tempo, Wi-Fi sync) */
+        double c = s->beat_pos / lfo_sync_beats[sync];
+        long cycle = (long)floor(c);
+        ph = c - cycle;
+        s->lfo_ph[o][k] = ph;
+        s->lfo_from[o][k] = lfo_cycle_random(cycle - 1, o, k);
+        s->lfo_to[o][k] = lfo_cycle_random(cycle, o, k);
+        wrapped = 0;
+    } else {
+        ph = s->lfo_ph[o][k] + s->u[LFO_PARAM(o, k, RATE)] * n / s->fs;
+        wrapped = ph >= 1.0;
+        if (wrapped) ph -= floor(ph);
+        s->lfo_ph[o][k] = ph;
+    }
+    if (sync == 0 && (wrapped || (s->lfo_from[o][k] == 0 && s->lfo_to[o][k] == 0))) { /* a new random point each cycle */
+        s->lfo_from[o][k] = s->lfo_to[o][k];
+        s->lfo_rng = s->lfo_rng * 1664525u + 1013904223u; /* its own random numbers: the rest of the engine's stay put */
+        s->lfo_to[o][k] = (float)(s->lfo_rng >> 8) / 8388608.0f - 1.0f;
+    }
+    float t = (float)ph;
+    switch (wave) {
+    case LFO_TRIANGLE: return t < 0.5f ? 4 * t - 1 : 3 - 4 * t;
+    case LFO_SAW_UP: return 2 * t - 1;
+    case LFO_SAW_DOWN: return 1 - 2 * t;
+    case LFO_SQUARE: return t < 0.5f ? 1 : -1;
+    case LFO_RANDOM: return s->lfo_to[o][k];
+    case LFO_DRIFT: { /* glides from one random point to the next */
+        float c = 0.5f - 0.5f * cosf((float)M_PI * t);
+        return s->lfo_from[o][k] + c * (s->lfo_to[o][k] - s->lfo_from[o][k]);
+    }
+    default: return sinf(2 * (float)M_PI * t);
+    }
+}
+
+static inline void mod_set(Synth *s, int id, float v)
+{
+    const ParamInfo *pi = &param_info[id];
+    s->p[id] = v < pi->min ? pi->min : v > pi->max ? pi->max : v;
+    s->lfo_moded[s->n_moded++] = id;
+}
+
+/* run the LFOs for a block and add them onto the values the engine plays (the player's stay as they are) */
+static void lfo_apply(Synth *s, int n)
+{
+    for (int i = 0; i < s->n_moded; i++) s->p[s->lfo_moded[i]] = s->u[s->lfo_moded[i]];
+    s->n_moded = 0;
+    for (int o = 0; o < 2; o++)
+        for (int k = 0; k < 2; k++) {
+            /* a glide on the output, so a square, saw or random wave steps without clicking: up to 40 ms, shorter at
+             * fast rates so they keep their edge; smooth waves only get a touch (2 ms) */
+            int w = (int)s->u[LFO_PARAM(o, k, WAVE)];
+            float glide = w == LFO_SINE || w == LFO_TRIANGLE || w == LFO_DRIFT ? 0.002f
+                                                                              : fminf(0.04f, 0.15f / synth_lfo_hz(s, o, k));
+            float v = s->lfo_val[o][k] + (lfo_tick(s, o, k, n) - s->lfo_val[o][k]) * (1.0f - expf(-n / (glide * s->fs)));
+            s->lfo_val[o][k] = v;
+            int dest = (int)s->u[LFO_PARAM(o, k, DEST)];
+            float d = s->u[LFO_PARAM(o, k, DEPTH)], uni = d * (v + 1) * 0.5f; /* bipolar v * d, or upward only */
+            if (dest == LFO_OFF || dest == LFO_SCAN || d < 0.001f) continue;
+            int vo = o * OSC_STRIDE;
+            switch (dest) {
+            case LFO_PITCH: mod_set(s, P_A_TUNE + vo, s->p[P_A_TUNE + vo] + v * d * 12); break;
+            case LFO_LEVEL: mod_set(s, P_A_LEVEL + vo, s->p[P_A_LEVEL + vo] * (1 - d * (1 - v) * 0.5f)); break;
+            case LFO_PAN: mod_set(s, P_A_PAN + vo, s->p[P_A_PAN + vo] + v * d); break;
+            case LFO_SIZE: mod_set(s, P_A_SIZE + vo, s->p[P_A_SIZE + vo] * exp2f(v * d * 2)); break;
+            case LFO_TEXTURE: mod_set(s, P_A_TEXTURE + vo, s->p[P_A_TEXTURE + vo] + uni); break;
+            case LFO_DRIVE: mod_set(s, P_A_DRIVE + vo, s->p[P_A_DRIVE + vo] + uni); break;
+            case LFO_OSC_MIX: mod_set(s, P_A_OSC_MIX + vo, s->p[P_A_OSC_MIX + vo] + uni); break;
+            case LFO_FILTER: mod_set(s, P_TONE, s->p[P_TONE] + v * d); break;
+            case LFO_MORPH: mod_set(s, P_MORPH, s->p[P_MORPH] + uni); break;
+            case LFO_FOLD: mod_set(s, P_FOLD, s->p[P_FOLD] + uni); break;
+            case LFO_ECHO: mod_set(s, P_ECHO, s->p[P_ECHO] + uni); break;
+            case LFO_SPACE: mod_set(s, P_SPACE, s->p[P_SPACE] + uni); break;
+            }
+        }
+}
+
 /* ------------------------------------------------------------------ output stage */
 
 /* DC blocker (r: pole near 1): radio streams and effects can carry a slow offset that only eats headroom */
@@ -1257,6 +1422,7 @@ void synth_process(Synth *s, const float *inA, const float *inB, float *out, int
 
     for (int b0 = 0; b0 < frames; b0 += BLOCK) {
         int n = frames - b0 < BLOCK ? frames - b0 : BLOCK;
+        lfo_apply(s, n);
         double beat0 = s->beat_pos;
         s->beat_pos += beat_inc * n;
         osc_control(s, 0, n);
@@ -1295,11 +1461,20 @@ void synth_process(Synth *s, const float *inA, const float *inB, float *out, int
         const float dc_r = 1.0f - 2.0f * (float)M_PI * 5.0f / fs; /* DC blocker at 5 Hz */
 
         /* filter: one knob from dark (low-pass) through open to thin (high-pass) */
+        /* filter: one knob from dark through open to thin, as a high-pass into a low-pass that both always run, so
+         * the sound stays continuous wherever the knob (or an LFO) moves it; dry exactly at open, fading in */
         float tone = s->p[P_TONE];
-        int fmode = tone < -0.02f ? 1 : tone > 0.02f ? 2 : 0;
-        float g = tanf((float)M_PI * fminf(tone_cutoff(tone), fs * 0.45f) / fs);
-        float k = 2.0f - 1.9f * s->p[P_RESO];
-        float a1 = 1.0f / (1.0f + g * (g + k)), a2 = g * a1, a3 = g * a2;
+        float reso_k = 2.0f - 1.9f * s->p[P_RESO], flat_k = 1.414f;
+        SvfCoef lp_c, hp_c;
+        {
+            float gl = tanf((float)M_PI * fminf(tone < 0 ? tone_cutoff(tone) : 20000.0f, fs * 0.45f) / fs);
+            float gh = tanf((float)M_PI * (tone > 0 ? tone_cutoff(tone) : 20.0f) / fs);
+            float kl = tone < 0 ? reso_k : flat_k, kh = tone > 0 ? reso_k : flat_k;
+            lp_c.a1 = 1.0f / (1.0f + gl * (gl + kl)); lp_c.a2 = gl * lp_c.a1; lp_c.a3 = gl * lp_c.a2;
+            hp_c.a1 = 1.0f / (1.0f + gh * (gh + kh)); hp_c.a2 = gh * hp_c.a1; hp_c.a3 = gh * hp_c.a2;
+        }
+        const float hp_k = tone > 0 ? reso_k : flat_k;
+        const float filt_wet = fminf(1.0f, fabsf(tone) / 0.05f);
         float fold = s->p[P_FOLD];
         float g_low = db2lin(s->p[P_LOW]) - 1.0f, g_high = db2lin(s->p[P_HIGH]) - 1.0f;
         int eq_on = fabsf(s->p[P_LOW]) > 0.1f || fabsf(s->p[P_HIGH]) > 0.1f;
@@ -1450,14 +1625,20 @@ void synth_process(Synth *s, const float *inA, const float *inB, float *out, int
             float tf = 0, tfo = 0, pre[2];
             for (int c = 0; c < 2; c++) {
                 float v = x[c];
-                if (fmode) {
-                    Svf *f = &s->filt[c];
-                    float v3 = v - f->ic2;
-                    float v1 = a1 * f->ic1 + a2 * v3;
-                    float v2 = f->ic2 + a2 * f->ic1 + a3 * v3;
-                    f->ic1 = 2 * v1 - f->ic1;
-                    f->ic2 = 2 * v2 - f->ic2;
-                    v = fmode == 1 ? v2 : v - k * v1 - v2;
+                {
+                    Svf *h = &s->filt_hp[c], *l = &s->filt[c];
+                    float v3 = v - h->ic2; /* high-pass */
+                    float v1 = hp_c.a1 * h->ic1 + hp_c.a2 * v3;
+                    float v2 = h->ic2 + hp_c.a2 * h->ic1 + hp_c.a3 * v3;
+                    h->ic1 = 2 * v1 - h->ic1;
+                    h->ic2 = 2 * v2 - h->ic2;
+                    float hp = v - hp_k * v1 - v2;
+                    v3 = hp - l->ic2; /* then low-pass */
+                    v1 = lp_c.a1 * l->ic1 + lp_c.a2 * v3;
+                    v2 = l->ic2 + lp_c.a2 * l->ic1 + lp_c.a3 * v3;
+                    l->ic1 = 2 * v1 - l->ic1;
+                    l->ic2 = 2 * v2 - l->ic2;
+                    v += filt_wet * (v2 - v);
                 }
                 if (eq_on) { /* bass and treble shelves around 250 Hz and 3 kHz */
                     s->lo_lp[c] += (v - s->lo_lp[c]) * k_lo;
@@ -1542,6 +1723,23 @@ void synth_process(Synth *s, const float *inA, const float *inB, float *out, int
             /* last safety: straight up to 0.95, then a soft knee into full scale, so only true overs are shaped */
             out[i * 2] = soft_clip(x[0]);
             out[i * 2 + 1] = soft_clip(x[1]);
+            if (s->clean_req || s->clean_gain < 1) { /* clean slate: 10 ms out, reset, 10 ms back in */
+                float step = 1.0f / (0.01f * fs);
+                if (s->clean_req && !s->clean_fading) s->clean_fading = 1;
+                if (s->clean_fading) {
+                    s->clean_gain -= step;
+                    if (s->clean_gain <= 0) {
+                        s->clean_gain = 0;
+                        clean_now(s);
+                        s->clean_fading = 0;
+                        s->clean_req = 0;
+                    }
+                } else {
+                    s->clean_gain = s->clean_gain + step > 1 ? 1 : s->clean_gain + step;
+                }
+                out[i * 2] *= s->clean_gain;
+                out[i * 2 + 1] *= s->clean_gain;
+            }
             meter_peak(&mt[MIX_OUT], out[i * 2], out[i * 2 + 1], fall);
             s->tap[TAP_OUT][tw] = 0.5f * (out[i * 2] + out[i * 2 + 1]);
             s->tap_w++;
