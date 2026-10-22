@@ -57,9 +57,12 @@ a wavefolder, echo and space.
   - **Volume**, a look-ahead **limiter** (push, release, ceiling), and a leveller (**auto level**) that keeps the
     overall loudness steady so the radio comes through clearly.
 - **LFOs.** Each voice has two independent LFOs (MOD page): wave (sine, triangle, saw up, saw down, square,
-  random, drift), rate (0.02 to 20 Hz), depth and destination: the voice's pitch, level, pan, size, texture, drive
+  random, drift), rate (0.02 to 20 Hz, or **Sync** to a note value from 1/32 to 16 bars), depth and destination: the voice's pitch, level, pan, size, texture, drive
   or oscillator mix, or the shared filter, morph, fold, echo or space. Stepped waves glide a few ms so they don't
   click. They move the values the engine plays, never your settings, so turning one off puts everything back.
+  A synced LFO takes its position from the clock the rhythms follow: tap tempo restarts it on the downbeat, Wi-Fi
+  sync locks it to the lead unit, stopping the rhythms holds it, and its random and drift values come from the bar
+  position, so synced units move together.
 - **Radio scan.** An LFO sent to RADIO SCAN tunes its voice around the station list like a wave scanner: depth
   sets how far from the voice's own station it roams (a station or two either side at low depth, the whole list at
   full depth), the wave sets how (sine sweeps up and down the dial, random jumps), and the voice crossfades into

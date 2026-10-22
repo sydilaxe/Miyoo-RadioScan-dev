@@ -16,6 +16,9 @@ static const char *const osc_modes[] = {"LIVE", "LOOP", "WAVE", "GRAIN", NULL};
 static const char *const focuses[] = {"ALL SOUND", "VOICES ONLY", "MUSIC ONLY", NULL};
 static const char *const directions[] = {"FORWARD", "REVERSE", "BOTH", NULL};
 static const char *const lfo_waves[] = {"SINE", "TRIANGLE", "SAW UP", "SAW DOWN", "SQUARE", "RANDOM", "DRIFT", NULL};
+static const char *const lfo_syncs[] = {"FREE", "1/32", "1/16", "1/8T", "1/8", "1/8.", "1/4T", "1/4", "1/4.", "1/2",
+                                        "1 BAR", "2 BARS", "4 BARS", "8 BARS", "16 BARS", NULL};
+static const double lfo_sync_beats[] = {0, 0.125, 0.25, 1.0 / 3, 0.5, 0.75, 2.0 / 3, 1, 1.5, 2, 4, 8, 16, 32, 64};
 static const char *const lfo_dests[] = {"OFF", "PITCH", "LEVEL", "PAN", "SIZE", "TEXTURE", "DRIVE", "OSC MIX",
                                         "FILTER", "MORPH", "FOLD", "ECHO", "SPACE", "RADIO SCAN", NULL};
 static const char *const stut_modes[] = {"REPEAT", "REVERSE", "RANDOM", "PITCH", "DROPOUT", "SCATTER", NULL};
@@ -64,6 +67,7 @@ int euclid_hit(int steps, int pulses, int rotate, int step)
 #define LFO_PARAMS(X, x, n, rate)                                                                              \
     [P_##X##_LFO##n##_WAVE] = {x "_lfo" #n "_wave", "Wave", PAGE_MOD, 0, LFO_WAVES - 1, 0, 1, 0, "", lfo_waves}, \
     [P_##X##_LFO##n##_RATE] = {x "_lfo" #n "_rate", "Rate", PAGE_MOD, 0.02f, 20, rate, 1.1f, 1, "hz", NULL}, \
+    [P_##X##_LFO##n##_SYNC] = {x "_lfo" #n "_sync", "Sync", PAGE_MOD, 0, 14, 0, 1, 0, "", lfo_syncs},           \
     [P_##X##_LFO##n##_DEPTH] = {x "_lfo" #n "_depth", "Depth", PAGE_MOD, 0, 1, 0, 0.02f, 0, "", NULL},      \
     [P_##X##_LFO##n##_DEST] = {x "_lfo" #n "_dest", "Destination", PAGE_MOD, 0, LFO_DESTS - 1, 0, 1, 0, "", lfo_dests}
 
@@ -228,8 +232,9 @@ void param_format_ctx(int id, const float *params, char *buf, int n)
     } else if (!strcmp(p->unit, "pan")) {
         if (fabsf(v) < 0.01f) snprintf(buf, n, "centre");
         else snprintf(buf, n, "%s %.0f%%", v < 0 ? "left" : "right", fabsf(v) * 100);
-    } else if (!strcmp(p->unit, "hz")) {
-        snprintf(buf, n, v < 1 ? "%.2f Hz (%.1f s)" : "%.1f Hz", v, 1.0f / v);
+    } else if (!strcmp(p->unit, "hz")) { /* an LFO rate; its Sync setting follows it */
+        if ((int)params[id + 1] > 0) snprintf(buf, n, "(follows the tempo)");
+        else snprintf(buf, n, v < 1 ? "%.2f Hz (%.1f s)" : "%.1f Hz", v, 1.0f / v);
     } else if (!strcmp(p->unit, "ms")) {
         snprintf(buf, n, v < 10 ? "%.1f ms" : "%.0f ms", v);
     } else if (!strcmp(p->unit, "limit")) { /* how hard the mix is pushed into the limiter, 0 .. +18 dB */
@@ -524,6 +529,21 @@ int synth_seq_step(const Synth *s, int q) { return q >= SEQ_SA ? s->rh[q - SEQ_S
 float synth_seq_flash(const Synth *s, int q) { return q >= SEQ_SA ? s->rh[q - SEQ_SA].st.flash : s->rh[q].flash; }
 float synth_cross_gate(const Synth *s) { return s->rh[SEQ_X].gate; }
 float synth_lfo_value(const Synth *s, int o, int k) { return s->lfo_val[o][k]; }
+float synth_lfo_hz(const Synth *s, int o, int k)
+{
+    int sync = (int)s->u[LFO_PARAM(o, k, SYNC)];
+    return sync > 0 ? (float)(s->u[P_BPM] / 60.0 / lfo_sync_beats[sync]) : s->u[LFO_PARAM(o, k, RATE)];
+}
+
+/* a random value in -1..1 for a clock-locked LFO's cycle: the same on every unit following the same clock */
+static float lfo_cycle_random(long cycle, int o, int k)
+{
+    unsigned h = (unsigned)cycle * 2654435761u ^ (unsigned)(o * 2 + k + 1) * 40503u;
+    h ^= h >> 15;
+    h *= 2246822519u;
+    h ^= h >> 13;
+    return (float)(h >> 8) / 8388608.0f - 1.0f;
+}
 float synth_mix_meter(const Synth *s, int ch) { return ch >= 0 && ch < MIX_COUNT ? s->meter[ch] : 0; }
 int synth_floor(const Synth *s) { return s->p[P_CONVERSE] > 0.01f ? s->floor_holder : -1; }
 
@@ -1271,12 +1291,24 @@ static inline void meter_peak(float *m, float l, float r, float fall) { meter_hi
 /* advance one LFO by n samples; returns -1..1 */
 static float lfo_tick(Synth *s, int o, int k, int n)
 {
-    int wave = (int)s->u[LFO_PARAM(o, k, WAVE)];
-    double ph = s->lfo_ph[o][k] + s->u[LFO_PARAM(o, k, RATE)] * n / s->fs;
-    int wrapped = ph >= 1.0;
-    if (wrapped) ph -= floor(ph);
-    s->lfo_ph[o][k] = ph;
-    if (wrapped || (s->lfo_from[o][k] == 0 && s->lfo_to[o][k] == 0)) { /* a new random point each cycle */
+    int wave = (int)s->u[LFO_PARAM(o, k, WAVE)], sync = (int)s->u[LFO_PARAM(o, k, SYNC)];
+    double ph;
+    int wrapped;
+    if (sync > 0) { /* locked to the clock: the phase comes from the beat position (tap tempo, Wi-Fi sync) */
+        double c = s->beat_pos / lfo_sync_beats[sync];
+        long cycle = (long)floor(c);
+        ph = c - cycle;
+        s->lfo_ph[o][k] = ph;
+        s->lfo_from[o][k] = lfo_cycle_random(cycle - 1, o, k);
+        s->lfo_to[o][k] = lfo_cycle_random(cycle, o, k);
+        wrapped = 0;
+    } else {
+        ph = s->lfo_ph[o][k] + s->u[LFO_PARAM(o, k, RATE)] * n / s->fs;
+        wrapped = ph >= 1.0;
+        if (wrapped) ph -= floor(ph);
+        s->lfo_ph[o][k] = ph;
+    }
+    if (sync == 0 && (wrapped || (s->lfo_from[o][k] == 0 && s->lfo_to[o][k] == 0))) { /* a new random point each cycle */
         s->lfo_from[o][k] = s->lfo_to[o][k];
         s->lfo_rng = s->lfo_rng * 1664525u + 1013904223u; /* its own random numbers: the rest of the engine's stay put */
         s->lfo_to[o][k] = (float)(s->lfo_rng >> 8) / 8388608.0f - 1.0f;
@@ -1314,7 +1346,7 @@ static void lfo_apply(Synth *s, int n)
              * fast rates so they keep their edge; smooth waves only get a touch (2 ms) */
             int w = (int)s->u[LFO_PARAM(o, k, WAVE)];
             float glide = w == LFO_SINE || w == LFO_TRIANGLE || w == LFO_DRIFT ? 0.002f
-                                                                              : fminf(0.04f, 0.15f / s->u[LFO_PARAM(o, k, RATE)]);
+                                                                              : fminf(0.04f, 0.15f / synth_lfo_hz(s, o, k));
             float v = s->lfo_val[o][k] + (lfo_tick(s, o, k, n) - s->lfo_val[o][k]) * (1.0f - expf(-n / (glide * s->fs)));
             s->lfo_val[o][k] = v;
             int dest = (int)s->u[LFO_PARAM(o, k, DEST)];

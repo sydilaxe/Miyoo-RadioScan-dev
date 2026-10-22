@@ -22,8 +22,8 @@
 #define VOICE_FIELDS(X)                                                                                       \
     P_##X##_STATION, P_##X##_MODE, P_##X##_TUNE, P_##X##_SIZE, P_##X##_TEXTURE, P_##X##_DIR, P_##X##_FOCUS,     \
     P_##X##_LEVEL, P_##X##_MUTE, P_##X##_PAN, P_##X##_DRIVE, P_##X##_OSC, P_##X##_OSC_MIX,                     \
-    P_##X##_LFO1_WAVE, P_##X##_LFO1_RATE, P_##X##_LFO1_DEPTH, P_##X##_LFO1_DEST,                                \
-    P_##X##_LFO2_WAVE, P_##X##_LFO2_RATE, P_##X##_LFO2_DEPTH, P_##X##_LFO2_DEST,                                    \
+    P_##X##_LFO1_WAVE, P_##X##_LFO1_RATE, P_##X##_LFO1_SYNC, P_##X##_LFO1_DEPTH, P_##X##_LFO1_DEST,            \
+    P_##X##_LFO2_WAVE, P_##X##_LFO2_RATE, P_##X##_LFO2_SYNC, P_##X##_LFO2_DEPTH, P_##X##_LFO2_DEST,                                    \
     RHYTHM_FIELDS(X)
 
 enum {
@@ -63,7 +63,8 @@ enum { DIR_FORWARD, DIR_REVERSE, DIR_BOTH }; /* BOTH: loops ping-pong, grains go
 enum { CAT_ANY, CAT_VOICE, CAT_MUSIC, CAT_SOUND };
 enum { VS_SILENT, VS_MUSIC, VS_VOICE };
 enum { PAGE_VOICES, PAGE_RHYTHM, PAGE_ENGINE, PAGE_MOD, PAGE_MIX, PAGE_COUNT };
-/* two LFOs per voice: k = 0 or 1; LFO_PARAM(o, k, WAVE / RATE / DEPTH / DEST) */
+/* two LFOs per voice: k = 0 or 1; LFO_PARAM(o, k, WAVE / RATE / SYNC / DEPTH / DEST). SYNC 0 runs free at RATE Hz;
+ * otherwise a note value, locked to the clock (tap tempo and Wi-Fi sync included) */
 #define LFO_PARAM(o, k, F) (P_A_LFO1_##F + (o) * OSC_STRIDE + (k) * (P_A_LFO2_WAVE - P_A_LFO1_WAVE))
 enum { LFO_SINE, LFO_TRIANGLE, LFO_SAW_UP, LFO_SAW_DOWN, LFO_SQUARE, LFO_RANDOM, LFO_DRIFT, LFO_WAVES };
 /* what an LFO moves: its own voice's pitch, level, pan, size, texture, drive or oscillator mix, the shared filter,
@@ -129,6 +130,7 @@ int synth_seq_step(const Synth *s, int seq);           /* current step of SEQ_A,
 float synth_seq_flash(const Synth *s, int seq);
 float synth_cross_gate(const Synth *s);                /* how open the cross rhythm is now, 0..1 */
 float synth_lfo_value(const Synth *s, int o, int k);   /* an LFO's output now, -1..1 */
+float synth_lfo_hz(const Synth *s, int o, int k);      /* its speed now, free or from the tempo */
 float synth_gate_value(const Synth *s, int osc);       /* how open the voice is now, 0..1 */
 float synth_speechness(const Synth *s, int osc);       /* 0 music .. 1 speech */
 int synth_voice_state(const Synth *s, int osc);        /* VS_* */

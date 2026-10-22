@@ -2288,7 +2288,7 @@ static void radio_scan(Uint32 now)
         for (int k = 0; k < 2; k++)
             if ((int)synth_get_param(syn, LFO_PARAM(o, k, DEST)) == LFO_SCAN) {
                 float d = synth_get_param(syn, LFO_PARAM(o, k, DEPTH));
-                if (d > depth) { depth = d; v = synth_lfo_value(syn, o, k); rate = synth_get_param(syn, LFO_PARAM(o, k, RATE)); }
+                if (d > depth) { depth = d; v = synth_lfo_value(syn, o, k); rate = synth_lfo_hz(syn, o, k); }
             }
         int base = station_param(o), scanning = depth > 0.01f;
         if (base < 0 || base >= n || n < 2 || ui.pending_station[o] >= -1) continue;
