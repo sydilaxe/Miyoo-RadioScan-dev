@@ -70,6 +70,10 @@ a wavefolder, echo and space.
   With scan off the voice glides back to its own station. The station name shows `~` while it is away.
 - **Mix.** One page of faders with live meters: each voice's level and drive, how loud each effect comes back
   (cross, shape, echo, space), the limiter and the master volume.
+- **RAW.** Hold MENU + SELECT for the two stations exactly as they arrive, through one crossfader and nothing else:
+  no engine, no effects, no leveller, limiter or dither. With the fader at one end, that station comes out
+  sample for sample as it was decoded. In between it's a plain linear crossfade, which can't add up louder than the
+  louder station, so nothing clips. See [RAW](#raw) below.
 - **Stations.** 35 are preloaded and you can add more three ways:
   1. Edit `stations.txt` on the SD card (`Name|URL|voice|music|sound`).
   2. Type a URL on the on-screen keyboard (RADIO page, **Y**).
@@ -116,6 +120,7 @@ and the five stages, with the stage you're editing ringed.
 | ![engine](docs/engine.png) | ![rhythm](docs/rhythm.png) |
 | ![radio](docs/radio.png) | ![sound gestures](docs/playmod.png) |
 | ![mix](docs/mix.png) | ![mod](docs/mod.png) |
+| ![raw](docs/raw.png) | |
 
 ## Install
 
@@ -156,6 +161,7 @@ ring is outlined, and every change shows its pattern briefly, like `A  E(5,8) >2
 | SELECT | tap tempo |
 | START | go to EDIT |
 | hold MENU + START | clean slate (any screen): both voices plain LIVE feeds, no effects |
+| hold MENU + SELECT | RAW in / out (any screen): the two stations untouched, with a crossfader |
 | MENU twice | quit |
 
 **EDIT** (RADIO, VOICES, RHYTHM, ENGINE, MOD, MIX)
@@ -188,6 +194,31 @@ pitch, crush, oscillator or drive, unmuted), the gate, stutter and cross rhythms
 are kept for when you turn them back on), and every effect goes neutral: cross-modulation, filter, EQ, drive, fold,
 crush, echo, space and width, with the MIX returns at unity, the limiter's push off and every LFO's depth at 0 (so
 radio scan stops and the voices glide home). Echo and reverb tails are cleared. Stations, volume, tempo, sync and the clock output stay. The sound fades out and back in over 10 ms, so it doesn't click.
+
+### RAW
+
+Hold **MENU + SELECT** (from any screen) to hear the two stations untouched, with one crossfader between them.
+Hold MENU + SELECT again to go back to the engine. The switch either way is a 10 ms crossfade, so it doesn't click.
+
+| Button | Action |
+|---|---|
+| D-pad left / right | move the fader (hold B to move it slowly) |
+| L1 / R1 | fade all the way to A / B, taking the fade time |
+| A | fade across to the other side |
+| Y | fade to the centre |
+| D-pad up / down | fade time: cut, 0.5, 1, 2, 4, 8 or 16 s for the whole way across |
+| hold L2 + up / down | the previous / next station on A |
+| hold R2 + up / down | the previous / next station on B |
+| START | EDIT (the RADIO page picks stations too); START again comes back to RAW |
+
+Each side shows its station, its song title, a meter of the stream as it arrives and how much the fader lets
+through. Only the crossfade happens to the sound. At either end of the fader the other station is
+silent and this one comes out sample for sample as decoded, when the station's sample rate matches the
+output (48 kHz by default; a 44.1 kHz station is still resampled to fit the hardware). In between, the mix is
+`A × (1 − x) + B × x`, eased over 5 ms so a jump doesn't click. The engine keeps running underneath, unheard, so the
+tempo, Wi-Fi sync and every setting are just as you left them when you come back. Radio scan pauses while RAW is
+on. RAW, the fader and the fade time are saved, so RadioScan opens in RAW if you left it there. RAW is stereo even
+when the output is set to mono + clock.
 
 ## Wi-Fi sync
 
