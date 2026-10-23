@@ -216,7 +216,7 @@ the ENGINE page still sets its character (echo feedback, reverb length, how hard
 pitch, crush, oscillator or drive, unmuted), the gate, stutter and cross rhythms are switched off (their patterns
 are kept for when you turn them back on), and every effect goes neutral: cross-modulation, filter, EQ, drive, fold,
 crush, echo, space and width, with the MIX returns at unity, the limiter's push off and every LFO's depth at 0 (so
-radio scan stops and the voices glide home). Echo and reverb tails are cleared. Stations, volume, tempo and sync stay. The sound fades out and back in over 10 ms, so it doesn't click.
+radio scan stops and the voices glide home). Echo and reverb tails are cleared. Stations, volume, tempo, sync and the clock output stay. The sound fades out and back in over 10 ms, so it doesn't click.
 
 ## Wi-Fi sync
 
@@ -239,6 +239,25 @@ The badge next to the tempo shows the state: an empty ring while searching, then
 linked. Each unit sends 32 bytes ten times a second, so sync adds almost nothing on top of the two radio
 streams. All units must be on the same network, and the network must allow devices to see each other. Guest
 networks and some public Wi-Fi block this; a phone hotspot works well and also gives the radio its internet.
+
+## Clock out (mono + clock)
+
+As on HI5, RadioScan can lead other gear with clock pulses. Under **RHYTHM → CLOCK OUT**, set **Output** to
+**MONO + CLOCK**: the sound plays in mono on one side of the headphone jack and clock pulses on the other. Split
+it with a stereo-to-two-mono cable and plug the clock side into a Pocket Operator, Volca or other sync input.
+
+| Setting | Behavior |
+|---|---|
+| Output | STEREO (default) or MONO + CLOCK |
+| Clock On | which side carries the pulses: RIGHT (default) or LEFT |
+| PPQN | pulses per quarter note: 1, 2 (Pocket Operators, Volcas; the default), 4, 8, 16, 24 (DIN sync) or 32 |
+| Pulse Width | 1 to 20 ms (5 by default) |
+
+The pulses follow the same clock as the rhythms, so tap tempo, start / stop (L2 + A) and Wi-Fi sync carry
+through: stopped, there are no pulses. They leave with the sound, after the limiter's 1.5 ms look-ahead, so each
+lands on its beat. In mono + clock every pan and stereo spread plays from the centre: each voice's Pan (and an
+LFO on it), the grains' spread and Stereo Width. The settings are kept and come back with STEREO; their rows say
+so. The clock side goes out without dither. Dice and the clean slate leave the output settings alone.
 
 ## Building
 

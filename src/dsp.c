@@ -30,6 +30,11 @@ static const char *const fm_dirs[] = {"B BENDS A", "A BENDS B", NULL};
 static const char *const band_names[] = {"5", "8", "13", "21", "34", NULL};
 static const int band_counts[] = {5, 8, 13, 21, 34};
 static const char *const sync_modes[] = {"OFF", "AUTO", "LEAD", "FOLLOW", NULL};
+static const char *const outputs[] = {"STEREO", "MONO + CLOCK", NULL};
+static const char *const clk_sides[] = {"RIGHT", "LEFT", NULL};
+static const char *const ppqns[] = {"1", "2  PO / VOLCA", "4", "8", "16", "24  DIN", "32", NULL};
+static const int ppqn_values[] = {1, 2, 4, 8, 16, 24, 32};
+int clk_ppqn_value(int i) { return ppqn_values[i < 0 ? 0 : i > 6 ? 6 : i]; }
 static const char *const roots[] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B", NULL};
 static const char *const rates[] = {"1/32", "1/16", "1/8T", "1/8", "1/8.", "5/16", "1/4T", "1/4", "1/4.",
                                     "5/8", "1/2", "1 BAR", "2 BARS", "4 BARS", "5 BARS", NULL};
@@ -95,6 +100,10 @@ const ParamInfo param_info[P_COUNT] = {
 
     [P_BPM]    = {"bpm", "Tempo (SELECT)", PAGE_RHYTHM, 20, 300, 80, 1, 0, "bpm", NULL},
     [P_SYNC]   = {"sync", "Wi-Fi Sync", PAGE_RHYTHM, 0, 3, 1, 1, 0, "", sync_modes},
+    [P_OUTPUT]    = {"output", "Output", PAGE_RHYTHM, 0, 1, 0, 1, 0, "", outputs},
+    [P_CLK_SIDE]  = {"clock_side", "Clock On", PAGE_RHYTHM, 0, 1, 0, 1, 0, "", clk_sides},
+    [P_CLK_PPQN]  = {"clock_ppqn", "PPQN", PAGE_RHYTHM, 0, 6, 1, 1, 0, "", ppqns},
+    [P_CLK_PULSE] = {"clock_pulse", "Pulse Width", PAGE_RHYTHM, 1, 20, 5, 1, 0, "ms", NULL},
     [P_VOCODE]     = {"vocode", "Vocode", PAGE_ENGINE, 0, 2, 0, 1, 0, "", vocodes},
     [P_VOCODE_AMT] = {"vocode_amt", "Vocode Amount", PAGE_ENGINE, 0, 1, 0.8f, 0.05f, 0, "", NULL},
     [P_BANDS]      = {"bands", "Vocode Bands", PAGE_ENGINE, 0, 4, 2, 1, 0, "", band_names},
@@ -142,6 +151,7 @@ const char *param_section(int id)
     if (id >= P_X_STUT_ON) return "STUTTER CROSS";
     if (id >= P_X_GATE_ON) return "RHYTHM CROSS";
     if (id <= P_SYNC) return "CLOCK";
+    if (id <= P_CLK_PULSE) return "CLOCK OUT";
     if (id <= P_CONVERSE) return "CROSS";
     if (id <= P_ROOT) return "KEY";
     if (id <= P_CRUSH) return "SHAPE";
@@ -153,7 +163,14 @@ const char *param_section(int id)
 const char *param_label(int id, const float *p)
 {
     int o = osc_of(id);
+    int mono = (int)p[P_OUTPUT] == OUT_MONO_CLOCK;
+    if (id > P_OUTPUT && id <= P_CLK_PULSE && !mono) {
+        static const char *const unused[] = {"Clock On (unused)", "PPQN (unused)", "Pulse Width (unused)"};
+        return unused[id - P_OUTPUT - 1];
+    }
+    if (id == P_WIDTH && mono) return "Stereo Width (mono)";
     if (o < 0) return param_info[id].label;
+    if (osc_field(id) == P_A_PAN && mono) return "Pan (mono: centre)";
     int mode = (int)p[P_A_MODE + o * OSC_STRIDE];
     int f = osc_field(id);
     static const char *const size_l[] = {"Size (unused)", "Loop Length", "Cycle Size", "Grain Size"};
@@ -681,6 +698,7 @@ static int dice_excluded(int id)
     int o = osc_of(id);
     int f = o >= 0 ? osc_field(id) : id;
     return f == P_A_STATION || f == P_A_FOCUS || f == P_A_DRIVE || f == P_A_MUTE || id == P_VOLUME || id == P_BPM || id == P_SYNC || id == P_ROOT ||
+           (id >= P_OUTPUT && id <= P_CLK_PULSE) ||
            (id >= P_CROSS_LEVEL && id <= P_AUTO_LEVEL); /* the effect returns stay where the player set them */
 }
 
@@ -929,7 +947,7 @@ static void osc_tick(Synth *s, int idx, float ratio, float freq)
                 gr->age = 0;
                 gr->wpos = 0;
                 gr->wstep = (float)WIN_N / glen;
-                float pan = (rnd01(s) - 0.5f) * 0.6f;
+                float pan = (int)s->p[P_OUTPUT] == OUT_MONO_CLOCK ? 0.0f : (rnd01(s) - 0.5f) * 0.6f;
                 gr->gl = 0.75f - pan * 0.5f;
                 gr->gr = 0.75f + pan * 0.5f;
                 break;
@@ -1481,6 +1499,12 @@ void synth_process(Synth *s, const float *inA, const float *inB, float *out, int
         float drive = s->p[P_DRIVE], dgain = 1.0f + drive * 9.0f, dcomp = 1.0f / (1.0f + drive * 2.0f);
         float crush = s->p[P_CRUSH], cq = exp2f(15.0f - crush * 12.0f), chold = 1.0f + crush * crush * 24.0f;
         float width = s->p[P_WIDTH];
+        /* MONO + CLOCK: the sound from the centre on one side, clock pulses on the other; the pulses go out
+         * lim_la samples late, with the sound the limiter holds back, so each lands on its beat */
+        const int clk_out = (int)s->p[P_OUTPUT] == OUT_MONO_CLOCK, clk_left = (int)s->p[P_CLK_SIDE];
+        const int clk_ppqn = clk_ppqn_value((int)s->p[P_CLK_PPQN]);
+        const double clk_spp = fs * 60.0 / (s->p[P_BPM] * clk_ppqn * s->clock_rate); /* samples per pulse */
+        const double clk_w = fmin(s->p[P_CLK_PULSE] * 0.001 * fs, clk_spp * 0.5);
         const float k_lo = 1.0f - expf(-2.0f * (float)M_PI * 250.0f / fs), k_hi = 1.0f - expf(-2.0f * (float)M_PI * 3000.0f / fs);
         float echo = s->p[P_ECHO], space = s->p[P_SPACE];
         float dtarget = 0.75f * 60.0f / s->p[P_BPM] * fs; /* dotted eighth */
@@ -1579,7 +1603,7 @@ void synth_process(Synth *s, const float *inA, const float *inB, float *out, int
                 s->tap[o ? TAP_B : TAP_A][tw] = 0.5f * (vl + vr);
                 os->level += (fabsf(vl) + fabsf(vr) - os->level) * 0.001f;
                 meter_peak(&mt[o ? MIX_B : MIX_A], vl * s->s_lvl[o], vr * s->s_lvl[o], fall);
-                float pan = s->p[P_A_PAN + o * OSC_STRIDE];
+                float pan = clk_out ? 0.0f : s->p[P_A_PAN + o * OSC_STRIDE];
                 x[0] += vl * s->s_lvl[o] * (1.0f - (pan > 0 ? pan : 0));
                 x[1] += vr * s->s_lvl[o] * (1.0f + (pan < 0 ? pan : 0));
             }
@@ -1742,6 +1766,13 @@ void synth_process(Synth *s, const float *inA, const float *inB, float *out, int
             }
             meter_peak(&mt[MIX_OUT], out[i * 2], out[i * 2 + 1], fall);
             s->tap[TAP_OUT][tw] = 0.5f * (out[i * 2] + out[i * 2 + 1]);
+            if (clk_out) {
+                float mono = 0.5f * (out[i * 2] + out[i * 2 + 1]);
+                double ph = fmod(beat * clk_ppqn - s->lim_la / clk_spp, 1.0);
+                float c = s->running && (ph < 0 ? ph + 1.0 : ph) * clk_spp < clk_w ? 0.95f : 0.0f;
+                out[i * 2] = clk_left ? c : mono;
+                out[i * 2 + 1] = clk_left ? mono : c;
+            }
             s->tap_w++;
         }
     }

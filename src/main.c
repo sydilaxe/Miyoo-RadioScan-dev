@@ -211,9 +211,11 @@ static void audio_cb(void *ud, Uint8 *stream, int len)
         read_voice(1, bufB, n);
         synth_process(syn, bufA, bufB, bufO, n);
         static unsigned dith = 22222;
+        /* mono + clock: the clock side is pulses, not sound, so it goes out exactly, without dither */
+        int clk_ch = (int)synth_get_param(syn, P_OUTPUT) == OUT_MONO_CLOCK ? !(int)synth_get_param(syn, P_CLK_SIDE) : -1;
         for (int i = 0; i < n * 2; i++) { /* to 16 bits with TPDF dither: quiet tails fade into noise, not grit */
             dith = dith * 1664525u + 1013904223u;
-            float d = (float)(dith >> 16 & 0xff) - (float)(dith >> 24); /* -255 .. 255, triangular */
+            float d = (i & 1) == clk_ch ? 0.0f : (float)(dith >> 16 & 0xff) - (float)(dith >> 24); /* -255 .. 255, triangular */
             float v = bufO[i] * 32767.0f + d * (1.0f / 256.0f);
             v = v > 32767.0f ? 32767.0f : v < -32768.0f ? -32768.0f : v;
             out[i] = (int16_t)lrintf(v);
@@ -2718,6 +2720,15 @@ int main(int argc, char **argv)
         if (!strcmp(shot_view, "radio")) ui.tab = TAB_RADIO;
         if (!strcmp(shot_view, "rhythm")) ui.tab = TAB_RHYTHM;
         if (!strcmp(shot_view, "rhythmx")) { ui.tab = TAB_RHYTHM; ui.sel[TAB_RHYTHM] = 99; }
+        if (!strcmp(shot_view, "clock")) { /* RHYTHM at CLOCK OUT, in mono + clock */
+            int rows[256];
+            const char *hdrs[256];
+            int n = build_rows(TAB_RHYTHM, rows, hdrs);
+            ui.tab = TAB_RHYTHM;
+            synth_set_param(syn, P_OUTPUT, OUT_MONO_CLOCK);
+            for (int r = 0; r < n; r++)
+                if (rows[r] == P_OUTPUT) ui.sel[TAB_RHYTHM] = r;
+        }
         if (!strcmp(shot_view, "engine")) ui.tab = TAB_ENGINE;
         if (!strcmp(shot_view, "mod")) ui.tab = TAB_MOD;
         if (!strcmp(shot_view, "mix")) ui.tab = TAB_MIX;
