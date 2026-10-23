@@ -30,6 +30,7 @@ enum {
     VOICE_FIELDS(A), /* VOICE B id = VOICE A id + OSC_STRIDE */
     VOICE_FIELDS(B),
     P_BPM, P_SYNC,
+    P_OUTPUT, P_CLK_SIDE, P_CLK_PPQN, P_CLK_PULSE, /* stereo, or mono sound + clock pulses for other gear */
     P_VOCODE, P_VOCODE_AMT, P_BANDS, P_FM, P_FM_DIR, P_RING, P_MORPH, P_CONVERSE,
     P_ROOT,
     P_TONE, P_RESO, P_LOW, P_HIGH, P_DRIVE, P_FOLD, P_CRUSH,
@@ -71,6 +72,11 @@ enum { LFO_SINE, LFO_TRIANGLE, LFO_SAW_UP, LFO_SAW_DOWN, LFO_SQUARE, LFO_RANDOM,
  * morph, fold, echo or space, or the voice's station (radio scan, done by the app: see synth_lfo_value) */
 enum { LFO_OFF, LFO_PITCH, LFO_LEVEL, LFO_PAN, LFO_SIZE, LFO_TEXTURE, LFO_DRIVE, LFO_OSC_MIX, LFO_FILTER, LFO_MORPH,
        LFO_FOLD, LFO_ECHO, LFO_SPACE, LFO_SCAN, LFO_DESTS };
+/* OUTPUT: STEREO, or MONO + CLOCK: the sound in mono on one side and clock pulses (P_CLK_PPQN per quarter note,
+ * P_CLK_PULSE ms wide) on the other (P_CLK_SIDE: 0 right, 1 left), while the clock runs. Every pan and stereo spread
+ * plays from the centre; the settings are kept. */
+enum { OUT_STEREO, OUT_MONO_CLOCK };
+int clk_ppqn_value(int i);                             /* P_CLK_PPQN index -> pulses per quarter note */
 enum { VOC_OFF, VOC_A_TO_B, VOC_B_TO_A };
 enum { FM_B_TO_A, FM_A_TO_B };
 

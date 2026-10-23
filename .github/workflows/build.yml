@@ -79,6 +79,13 @@ jobs:
           # one voice gets the talk stream and the other the music stream
           grep -q "voice sense .* (voice)" t/log.txt
           grep -q "voice sense .* (music)" t/log.txt
+          # mono + clock: the radio on the left, 2 PPQN pulses at 120 BPM on the right, nothing else there
+          RADIOSCAN_DIR=t ./build/desktop/radioscan --render 6 t/clock.wav output=1 bpm=120 clock_ppqn=1 2>/dev/null
+          python3 tools/clockcheck.py t/clock.wav right | tee t/clock.txt
+          grep -Eq "clock out on the right: 24 pulses, mean gap 250.00 ms, width 5.0.* ms, other values 0, sound peak (0\.[1-9]|1)" t/clock.txt
+          RS_FAST=1 RADIOSCAN_DIR=t ./build/desktop/radioscan --render 2 t/clock24.wav output=1 bpm=120 clock_ppqn=5 clock_side=1 2>/dev/null
+          python3 tools/clockcheck.py t/clock24.wav left | tee t/clock24.txt
+          grep -q "clock out on the left: 96 pulses, mean gap 20.83 ms, .* other values 0" t/clock24.txt
       - name: Wi-Fi sync test (two units on this machine)
         run: |
           ./build/desktop/radioscan --synctest LEAD 97 6 > lead.txt &
