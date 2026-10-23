@@ -386,15 +386,18 @@ int update_unzip(const unsigned char *zip, long len, const char *dir, char *err,
     for (long i = len - 22; i >= 0 && i >= len - 22 - 65535; i--)
         if (rd32(zip + i) == 0x06054b50UL) { eocd = i; break; }
     if (eocd < 0) { snprintf(err, errlen, "the download isn't a zip"); return -1; }
+    /* offsets are 64-bit so that a bad one can't wrap past the checks on the Miyoo's 32-bit longs */
+    typedef unsigned long long u64;
     unsigned entries = rd16(zip + eocd + 10);
-    unsigned long cd = rd32(zip + eocd + 16);
+    u64 cd = rd32(zip + eocd + 16);
     for (unsigned e = 0; e < entries; e++) {
-        if (cd + 46 > (unsigned long)len || rd32(zip + cd) != 0x02014b50UL) { snprintf(err, errlen, "the zip is damaged"); goto out; }
+        if (cd + 46 > (u64)len || rd32(zip + cd) != 0x02014b50UL) { snprintf(err, errlen, "the zip is damaged"); goto out; }
         const unsigned char *h = zip + cd;
         unsigned method = rd16(h + 10), nlen = rd16(h + 28);
-        unsigned long crc = rd32(h + 16), csize = rd32(h + 20), usize = rd32(h + 24), lho = rd32(h + 42);
+        unsigned long crc = rd32(h + 16), usize = rd32(h + 24);
+        u64 csize = rd32(h + 20), lho = rd32(h + 42);
         char name[256];
-        if (cd + 46 + nlen > (unsigned long)len || nlen >= sizeof name) { snprintf(err, errlen, "the zip is damaged"); goto out; }
+        if (cd + 46 + nlen > (u64)len || nlen >= sizeof name) { snprintf(err, errlen, "the zip is damaged"); goto out; }
         memcpy(name, h + 46, nlen);
         name[nlen] = 0;
         cd += 46 + nlen + rd16(h + 30) + rd16(h + 32);
@@ -407,9 +410,9 @@ int update_unzip(const unsigned char *zip, long len, const char *dir, char *err,
         if (keep_users(rel, path)) continue;
         if (nfiles == MAX_FILES) { snprintf(err, errlen, "the zip has too many files"); goto out; }
 
-        if (lho + 30 > (unsigned long)len || rd32(zip + lho) != 0x04034b50UL) { snprintf(err, errlen, "the zip is damaged"); goto out; }
-        unsigned long data = lho + 30 + rd16(zip + lho + 26) + rd16(zip + lho + 28);
-        if (data + csize > (unsigned long)len || usize > (unsigned long)MAX_ZIP) { snprintf(err, errlen, "the zip is damaged"); goto out; }
+        if (lho + 30 > (u64)len || rd32(zip + lho) != 0x04034b50UL) { snprintf(err, errlen, "the zip is damaged"); goto out; }
+        u64 data = lho + 30 + rd16(zip + lho + 26) + rd16(zip + lho + 28);
+        if (data + csize > (u64)len || usize > (unsigned long)MAX_ZIP) { snprintf(err, errlen, "the zip is damaged"); goto out; }
         unsigned char *buf = malloc(usize ? usize : 1);
         if (!buf) { snprintf(err, errlen, "out of memory"); goto out; }
         int bad = method == 0 ? (csize != usize ? -1 : (memcpy(buf, zip + data, usize), 0))
