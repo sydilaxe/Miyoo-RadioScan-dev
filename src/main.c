@@ -28,6 +28,7 @@
 #include "stations.h"
 #include "stream.h"
 #include "sync.h"
+#include "update.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -76,7 +77,7 @@ static StationList stations;
 static char app_dir[PATH_MAX], stations_path[PATH_MAX + 16], settings_path[PATH_MAX + 16];
 
 enum { SCR_PLAY, SCR_EDIT };
-enum { OV_NONE, OV_KEYBOARD, OV_SCANMENU, OV_SCANRESULTS };
+enum { OV_NONE, OV_KEYBOARD, OV_SCANMENU, OV_SCANRESULTS, OV_UPDATE };
 enum { KB_ADD_URL, KB_ADD_NAME, KB_SEARCH };
 enum { TAB_RADIO, TAB_VOICES, TAB_RHYTHM, TAB_ENGINE, TAB_MOD, TAB_MIX, TAB_COUNT };
 static const char *const tab_names[TAB_COUNT] = {"RADIO", "VOICES", "RHYTHM", "ENGINE", "MOD", "MIX"};
@@ -113,6 +114,8 @@ static struct {
     int dirty_settings;
     int repeating;
     int running;
+    int update_asked, update_tries; /* the update prompt has been shown this session; checks made */
+    Uint32 update_next_check, relaunch_at;
 } ui;
 
 /* ================================================================== audio */
@@ -898,6 +901,75 @@ static void draw_scan_results(void)
     char c[32];
     snprintf(c, sizeof c, "%d/%d", ui.scan_sel + 1, n);
     text_right(604, 50, c, C_DIM, 0);
+}
+
+/* ================================================================== self-update */
+
+static int update_auto; /* check GitHub for a newer release: on the Miyoo, or with RS_UPDATE=1 */
+
+/* a few seconds after starting (so Wi-Fi is up), then every minute until GitHub has answered, five tries */
+static void update_watch(Uint32 now)
+{
+    const UpdateStatus *u = update_status();
+    if (update_auto && (u->state == UP_IDLE || u->state == UP_CHECK_FAILED) && ui.update_tries < 5 &&
+        now >= ui.update_next_check) {
+        if (u->state == UP_CHECK_FAILED) ev("  %s", u->err);
+        ui.update_tries++;
+        ui.update_next_check = now + 60000;
+        update_check_start();
+    }
+    if (u->state == UP_AVAILABLE && !ui.update_asked && ui.overlay == OV_NONE) {
+        ui.update_asked = 1;
+        ui.overlay = OV_UPDATE;
+        ev("  update: v%s is out (this is v" RS_VERSION ")", u->latest);
+    }
+    if (u->state == UP_INSTALLED && !ui.relaunch_at) {
+        ev("  update: v%s installed, relaunching", u->latest);
+        ui.relaunch_at = now + 1200; /* long enough to read "restarting" */
+    }
+    if (ui.relaunch_at && now >= ui.relaunch_at) ui.running = 0;
+}
+
+static void update_input(int b)
+{
+    const UpdateStatus *u = update_status();
+    if (u->state == UP_INSTALLING || u->state == UP_INSTALLED) return;
+    if (b == B_A && (u->state == UP_AVAILABLE || u->state == UP_FAILED)) { update_install_start(app_dir); return; }
+    if (b == B_B || b == B_MENU) {
+        ui.overlay = OV_NONE;
+        if (u->state == UP_AVAILABLE) toast("v%s will be offered again next time", u->latest);
+    }
+}
+
+static void draw_update(void)
+{
+    const UpdateStatus *u = update_status();
+    char b[200];
+    fill(60, 130, 520, 220, C_PANEL);
+    snprintf(b, sizeof b, "RadioScan v%s is out", u->latest);
+    text_center(320, 150, b, C_LEAF, 0);
+    text_center(320, 176, "you have v" RS_VERSION, C_DIM, 0);
+    if (u->state == UP_INSTALLING || u->state == UP_INSTALLED) {
+        float t = SDL_GetTicks() / 1000.0f;
+        for (int i = 0; i < 5; i++) {
+            int x, y;
+            polar(320, 250, 26, t * 0.4f + i / 5.0f, &x, &y);
+            disc(x, y, 4, ring_cols[i]);
+        }
+        if (u->state == UP_INSTALLED) snprintf(b, sizeof b, "updated - restarting...");
+        else snprintf(b, sizeof b, "downloading... %d%%", u->progress);
+        text_center(320, 300, b, C_TEXT, 0);
+        return;
+    }
+    if (u->state == UP_FAILED) {
+        text_center(320, 220, u->err, C_RUST, 50);
+        text_center(320, 244, "nothing was changed", C_DIM, 0);
+        text_center(320, 310, "A try again    B close", C_TEXT, 0);
+        return;
+    }
+    text_center(320, 220, "download it now and restart?", C_TEXT, 0);
+    text_center(320, 244, "your stations and settings stay as they are", C_DIM, 0);
+    text_center(320, 310, "A update and restart    B not now", C_TEXT, 0);
 }
 
 /* ================================================================== shared widgets */
@@ -2069,6 +2141,7 @@ static void on_press(int b)
     if (ui.overlay == OV_KEYBOARD) { kb_input(b); return; }
     if (ui.overlay == OV_SCANMENU) { scan_menu_input(b); return; }
     if (ui.overlay == OV_SCANRESULTS) { scan_results_input(b); return; }
+    if (ui.overlay == OV_UPDATE) { update_input(b); return; }
 
     if (b == B_MENU) {
         if (ui.menu_armed && now - ui.menu_armed < 1500) { ui.running = 0; return; }
@@ -2341,6 +2414,7 @@ static void radio_scan(Uint32 now)
 static void logic_update(Uint32 now)
 {
     log_watch(now);
+    update_watch(now);
     radio_scan(now);
     audio_watch(now);
     for (int o = 0; o < 2; o++)
@@ -2390,6 +2464,7 @@ static void render(void)
     if (ui.overlay == OV_KEYBOARD) draw_keyboard();
     else if (ui.overlay == OV_SCANMENU) draw_scan_menu();
     else if (ui.overlay == OV_SCANRESULTS) draw_scan_results();
+    else if (ui.overlay == OV_UPDATE) draw_update();
     draw_toast();
 }
 
@@ -2566,8 +2641,20 @@ int main(int argc, char **argv)
                    category_names[scan_tmp.items[i].cat]);
         return 0;
     }
+    if (argc >= 2 && !strcmp(argv[1], "--update")) { /* --update: check GitHub (or RS_UPDATE_API) and install into the app folder */
+        char ca[PATH_MAX + 16];
+        snprintf(ca, sizeof ca, "%s/cacert.pem", app_dir);
+        net_init(ca);
+        const UpdateStatus *u = update_status();
+        if (update_check()) { fprintf(stderr, "%s\n", u->err); return 1; }
+        printf("this is v" RS_VERSION ", the latest release is v%s\n", u->latest);
+        if (u->state != UP_AVAILABLE && !(argc > 2 && !strcmp(argv[2], "--force"))) return 0;
+        if (update_install(app_dir)) { fprintf(stderr, "update failed: %s\n", u->err); return 1; }
+        printf("installed v%s into %s\n", u->latest, app_dir);
+        return 0;
+    }
 
-    /* --shot file.bmp <play|edit|radio|motion|kb|scan> [tab] : render one frame (for docs/tests) */
+    /* --shot file.bmp <play|edit|radio|motion|kb|scan|update> [tab] : render one frame (for docs/tests) */
     const char *shot = NULL, *shot_view = "play";
     int shot_tab = TAB_VOICES;
     if (argc >= 3 && !strcmp(argv[1], "--shot")) {
@@ -2636,6 +2723,12 @@ int main(int argc, char **argv)
         if (!strcmp(shot_view, "mix")) ui.tab = TAB_MIX;
         if (!strcmp(shot_view, "kb")) open_keyboard(KB_ADD_URL, "http://ice1.somafm.com/");
         if (!strcmp(shot_view, "scan")) ui.overlay = OV_SCANMENU;
+        if (!strcmp(shot_view, "update")) { /* the prompt, as if v9.9.9 were out */
+            UpdateStatus *u = (UpdateStatus *)update_status();
+            snprintf(u->latest, sizeof u->latest, "9.9.9");
+            u->state = UP_AVAILABLE;
+            ui.overlay = OV_UPDATE;
+        }
         /* let the engine run a moment so the rings and waves have something to show */
         static float fa[2048], fb[2048], fo[2048];
         for (int i = 0; i < 2048; i++) { /* A: noisy, bursty; B: a plain tone */
@@ -2661,6 +2754,12 @@ int main(int argc, char **argv)
     sync_init(&sync_clock);
     signal(SIGTERM, on_signal);
     signal(SIGINT, on_signal);
+#ifdef __arm__
+    update_auto = 1;
+#endif
+    if (getenv("RS_UPDATE")) update_auto = atoi(getenv("RS_UPDATE")) != 0;
+    ui.update_next_check = SDL_GetTicks() + 5000;
+    fprintf(stderr, "radioscan v" RS_VERSION ": update check %s\n", update_auto ? "on" : "off");
     fprintf(stderr, "radioscan: audio %s at %d Hz, %d frames/buffer\n", audio_ok ? "open" : "FAILED", audio_rate, buffer);
     ui.running = 1;
     ev_t0 = SDL_GetTicks();
@@ -2710,5 +2809,5 @@ int main(int argc, char **argv)
     stream_destroy(st_next[1]);
     synth_destroy(syn);
     SDL_Quit();
-    return 0;
+    return update_status()->state == UP_INSTALLED ? RELAUNCH_STATUS : 0; /* launch.sh starts the new version */
 }

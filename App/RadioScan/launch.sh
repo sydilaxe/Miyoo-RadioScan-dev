@@ -16,6 +16,12 @@ export RADIOSCAN_DIR="$(pwd)"
 # export RS_RATE=32000      # lighter on the CPU (48000 is the hardware's native rate)
 # export RS_RT=0            # don't give the audio thread real-time priority (to compare, if the sound stalls)
 # export RS_ROTATE180=0     # if the picture is upside down (the default turns it for the Mini Plus panel)
-./radioscan > log.txt 2>&1
+# export RS_UPDATE=0        # don't check GitHub for new versions
+
+# exit status 75: the app has just updated itself, so start the new version
+while :; do
+  ./radioscan > log.txt 2>&1
+  [ $? -eq 75 ] || break
+done
 
 rm -f /tmp/stay_awake
