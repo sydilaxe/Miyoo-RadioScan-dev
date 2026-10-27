@@ -11,6 +11,6 @@ buffers), and try these in `launch.sh` (uncomment the line):
 - Upside-down screen: `export RS_ROTATE180=0` (the default turns the picture for the Mini Plus panel).
 - Lighter on the CPU: `export RS_RATE=32000`.
 
-MP3 streams only (AAC, Ogg and HLS stations are skipped). Some preset station URLs may have changed; replace them from the RADIO page.
+MP3 streams only (AAC, Ogg and HLS stations are skipped). Your own `.wav` files can be voices too: put them in `App/RadioScan/wav/`. Some preset station URLs may have changed; replace them from the RADIO page.
 
 See the README for controls and features.

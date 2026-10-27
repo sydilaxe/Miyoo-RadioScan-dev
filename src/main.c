@@ -696,14 +696,15 @@ static void kb_append(const char *s)
 static void kb_done(void)
 {
     if (ui.kb_purpose == KB_ADD_URL) {
-        if (strncasecmp(ui.kb_text, "http://", 7) && strncasecmp(ui.kb_text, "https://", 8)) {
-            toast("the URL must start with http:// or https://");
+        if (strncasecmp(ui.kb_text, "http://", 7) && strncasecmp(ui.kb_text, "https://", 8) &&
+            strncasecmp(ui.kb_text, "file://", 7)) {
+            toast("the URL must start with http://, https:// or file://");
             return;
         }
         snprintf(ui.kb_url, sizeof ui.kb_url, "%s", ui.kb_text);
-        const char *host = strstr(ui.kb_url, "://") + 3;
         char name[96];
-        snprintf(name, sizeof name, "%.*s", (int)strcspn(host, "/:"), host);
+        station_default_name(ui.kb_url, name, sizeof name);
+        if (!stream_is_file(ui.kb_url)) name[strcspn(name, "/:")] = 0; /* just the host */
         open_keyboard(KB_ADD_NAME, name);
         return;
     }
@@ -2411,12 +2412,19 @@ static void init_common(void)
     char ca[PATH_MAX + 16];
     snprintf(ca, sizeof ca, "%s/cacert.pem", app_dir);
     net_init(ca);
-    if (stations_load(&stations, stations_path) < 0) {
+    stream_set_file_root(app_dir);
+    int fresh = stations_load(&stations, stations_path) < 0;
+    if (fresh) {
         stations_add(&stations, "SomaFM Drone Zone", "http://ice1.somafm.com/dronezone-128-mp3", CAT_SOUND);
         stations_add(&stations, "SomaFM Mission Control", "http://ice1.somafm.com/missioncontrol-128-mp3", CAT_VOICE);
         stations_add(&stations, "SomaFM Groove Salad", "http://ice1.somafm.com/groovesalad-128-mp3", CAT_MUSIC);
-        save_stations();
     }
+    /* .wav files dropped into the app's wav folder join the list as stations */
+    char wav_dir[PATH_MAX + 16];
+    snprintf(wav_dir, sizeof wav_dir, "%s/wav", app_dir);
+    int wavs = stations_add_wav_folder(&stations, wav_dir, "wav");
+    if (wavs) fprintf(stderr, "radioscan: added %d .wav file%s from %s\n", wavs, wavs == 1 ? "" : "s", wav_dir);
+    if (fresh || wavs) save_stations();
     ui.pending_station[0] = ui.pending_station[1] = -2;
     ui.tuned[0] = ui.tuned[1] = -2;
     ui.tab = TAB_VOICES;

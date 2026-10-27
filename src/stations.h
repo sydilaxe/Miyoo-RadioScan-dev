@@ -1,4 +1,4 @@
-/* Station list (stations.txt: "Name|URL" per line) and the online directory scanner
+/* Station list (stations.txt: "Name|URL" per line; a URL can also be a local file:// .wav) and the online directory scanner
  * (radio-browser.info, a free community database of internet radio stations). */
 #ifndef STATIONS_H
 #define STATIONS_H
@@ -23,6 +23,10 @@ int stations_add(StationList *l, const char *name, const char *url, int cat); /*
 int category_from_text(const char *s);     /* "voice"/"music"/"sound" (or genre tags) -> CAT_* */
 void stations_remove(StationList *l, int idx);
 int stations_find_url(const StationList *l, const char *url);
+/* a name from a URL: the host, or a file's name without its extension */
+void station_default_name(const char *url, char *out, int n);
+/* add every .wav in `dir` not already listed, as file://<url_prefix>/<name>.wav; returns how many were added */
+int stations_add_wav_folder(StationList *l, const char *dir, const char *url_prefix);
 
 /* Scanner menu: genre tags grouped by category (VOICES / SOUND / MUSIC). */
 typedef struct { const char *tag; int cat; } ScanGenre;

@@ -17,6 +17,7 @@
 #include <strings.h>
 #include <time.h>
 #include <unistd.h>
+#include <limits.h>
 
 #define RING_N (1 << 18)              /* stereo frames, ~5.9 s @ 44.1 kHz */
 #define PREBUFFER_SEC 1.5f
@@ -288,6 +289,135 @@ static void play_url(Stream *s, const char *start_url, int gen)
     http_close(&c);
 }
 
+/* ------------------------------------------------------------ local .wav files */
+
+static char file_root[PATH_MAX] = ".";
+
+void stream_set_file_root(const char *dir) { snprintf(file_root, sizeof file_root, "%s", dir && dir[0] ? dir : "."); }
+
+int stream_is_file(const char *url) { return !strncasecmp(url, "file://", 7); }
+
+void stream_file_path(const char *url, char *out, int n)
+{
+    const char *p = stream_is_file(url) ? url + 7 : url;
+    if (p[0] == '/') snprintf(out, n, "%s", p);
+    else snprintf(out, n, "%s/%s", file_root, p);
+}
+
+static unsigned rd16(const unsigned char *p) { return p[0] | p[1] << 8; }
+static unsigned rd32(const unsigned char *p) { return p[0] | p[1] << 8 | p[2] << 16 | (unsigned)p[3] << 24; }
+
+static inline int16_t to16(double v)
+{
+    v *= 32768.0;
+    return (int16_t)(v > 32767 ? 32767 : v < -32768 ? -32768 : v);
+}
+
+/* one sample of any supported encoding, as 16-bit */
+static inline int16_t wav_sample(const unsigned char *p, int fmt, int bits)
+{
+    if (fmt == 3) {
+        if (bits == 32) { float f; memcpy(&f, p, 4); return to16(f); }
+        double d; memcpy(&d, p, 8); return to16(d);
+    }
+    switch (bits) {
+    case 8: return (int16_t)((p[0] - 128) << 8);
+    case 16: return (int16_t)rd16(p);
+    case 24: return (int16_t)(p[1] | p[2] << 8);
+    default: return (int16_t)(p[2] | p[3] << 8); /* 32 */
+    }
+}
+
+/* Play a .wav file as if it were a station: decoded into the ring at its own rate, looping forever. */
+static void play_wav(Stream *s, const char *url, int gen)
+{
+    char path[PATH_MAX + 512];
+    stream_file_path(url, path, sizeof path);
+    set_status(s, ST_CONNECTING, "Opening file...");
+    FILE *f = fopen(path, "rb");
+    if (!f) { set_status(s, ST_ERROR, "WAV file not found"); return; }
+
+    unsigned char h[40];
+    int fmt = 0, ch = 0, bits = 0, rate = 0;
+    long data_at = -1, data_len = 0;
+    if (fread(h, 1, 12, f) != 12 || memcmp(h, "RIFF", 4) || memcmp(h + 8, "WAVE", 4)) {
+        fclose(f);
+        set_status(s, ST_ERROR, "Not a WAV file");
+        return;
+    }
+    while (fread(h, 1, 8, f) == 8) { /* walk the chunks for "fmt " and "data" */
+        long len = rd32(h + 4), at = ftell(f);
+        if (!memcmp(h, "fmt ", 4) && len >= 16) {
+            unsigned char fb[40] = {0};
+            if (fread(fb, 1, len < 40 ? len : 40, f) < 16) break;
+            fmt = rd16(fb);
+            ch = rd16(fb + 2);
+            rate = (int)rd32(fb + 4);
+            bits = rd16(fb + 14);
+            if (fmt == 0xFFFE && len >= 26) fmt = rd16(fb + 24); /* WAVE_FORMAT_EXTENSIBLE: the sub-format */
+        } else if (!memcmp(h, "data", 4)) {
+            data_at = at;
+            data_len = len;
+            break;
+        }
+        if (fseek(f, at + len + (len & 1), SEEK_SET)) break; /* chunks are padded to even sizes */
+    }
+    int ok = (fmt == 1 && (bits == 8 || bits == 16 || bits == 24 || bits == 32)) || (fmt == 3 && (bits == 32 || bits == 64));
+    if (data_at < 0 || !ok || ch < 1 || ch > 32 || rate < 1000 || rate > 384000) {
+        fclose(f);
+        if (data_at < 0) set_status(s, ST_ERROR, "WAV error: no audio data");
+        else set_status(s, ST_ERROR, "Unsupported WAV format (%d-bit, type %d)", bits, fmt);
+        return;
+    }
+    int frame_bytes = ch * bits / 8;
+    fseek(f, 0, SEEK_END);
+    long avail = ftell(f) - data_at; /* a header may lie about the length (recorders that never closed the file) */
+    if (data_len <= 0 || data_len > avail) data_len = avail;
+    long frames = data_len / frame_bytes;
+    if (frames < 1) { fclose(f); set_status(s, ST_ERROR, "WAV error: no audio data"); return; }
+
+    const char *name = strrchr(path, '/');
+    pthread_mutex_lock(&s->mtx);
+    snprintf(s->title, sizeof s->title, "%s", name ? name + 1 : path);
+    pthread_mutex_unlock(&s->mtx);
+    s->bitrate = (int)((long long)rate * ch * bits / 1000);
+    s->src_rate = rate;
+
+    s->flush_req = 1; /* drop audio from the previous station */
+    for (int i = 0; i < 50 && s->flush_req; i++) msleep(5);
+    set_status(s, ST_BUFFERING, "Buffering...");
+
+    enum { BLOCK = 1024 };
+    unsigned char *raw = malloc((size_t)BLOCK * frame_bytes);
+    int16_t pcm[BLOCK * 2];
+    if (!raw) { fclose(f); set_status(s, ST_ERROR, "Out of memory"); return; }
+    long pos = frames; /* seek on the first pass */
+    while (gen == s->generation && !s->quit) {
+        if (pos >= frames) { /* loop: back to the start of the audio */
+            fseek(f, data_at, SEEK_SET);
+            pos = 0;
+        }
+        long want = frames - pos < BLOCK ? frames - pos : BLOCK;
+        long got = (long)fread(raw, frame_bytes, want, f);
+        if (got <= 0) { set_status(s, ST_ERROR, "WAV error: read failed"); break; }
+        pos += got;
+        for (long i = 0; i < got; i++) {
+            const unsigned char *fr = raw + i * frame_bytes;
+            pcm[i * 2] = wav_sample(fr, fmt, bits);
+            pcm[i * 2 + 1] = ch > 1 ? wav_sample(fr + bits / 8, fmt, bits) : pcm[i * 2];
+        }
+        if (ring_push(s, pcm, (int)got, 2, gen)) break;
+        if (s->underrun) {
+            s->underrun = 0;
+            if (s->state == ST_PLAYING) set_status(s, ST_BUFFERING, "Buffering...");
+        }
+        if (s->state == ST_BUFFERING && ring_avail(s) > (unsigned)(s->src_rate * PREBUFFER_SEC))
+            set_status(s, ST_PLAYING, "Playing file");
+    }
+    free(raw);
+    fclose(f);
+}
+
 static void *worker_main(void *arg)
 {
     Stream *s = arg;
@@ -300,15 +430,17 @@ static void *worker_main(void *arg)
         int gen = s->generation;
         pthread_mutex_unlock(&s->mtx);
 
-        play_url(s, url, gen);
+        if (stream_is_file(url)) play_wav(s, url, gen);
+        else play_url(s, url, gen);
 
         /* retry after drop-outs while the same request is still wanted */
         for (int i = 0; i < 30 && gen == s->generation && !s->quit; i++) msleep(100);
         pthread_mutex_lock(&s->mtx);
         if (gen != s->generation) continue; /* a new request arrived meanwhile */
         if (s->state == ST_ERROR && (strstr(s->status_msg, "not supported") || strstr(s->status_msg, "Unsupported") ||
-                                     strstr(s->status_msg, "No MP3")))
-            s->want_play = 0; /* permanent failure: don't hammer the server */
+                                     strstr(s->status_msg, "No MP3") ||
+                                     strstr(s->status_msg, "WAV")))
+            s->want_play = 0; /* permanent failure: don't hammer the server (or re-read a bad file) */
     }
     pthread_mutex_unlock(&s->mtx);
     return NULL;
