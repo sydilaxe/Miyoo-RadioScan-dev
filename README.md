@@ -119,12 +119,41 @@ and the five stages, with the stage you're editing ringed.
 
 ## Install
 
+Turn on SSH on the Miyoo (Apps > Tweaks > Network > SSH). Then run this on a computer on the same network:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/sydilaxe/RadioScan/main/install.sh | bash
+```
+
+The script finds the Miyoo by scanning the local /24 for Onion's SSH server. It checks the installed version
+against the latest [release](../../releases), and if the release is newer it copies it to `SD:/App/RadioScan`.
+Your `stations.txt` and `settings.cfg` are kept. Run it again any time to update. Log in with Onion's default
+`onion` / `onion`. The address that worked is saved in `~/.config/radioscan/host`. To skip the scan, set `RS_HOST`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/sydilaxe/RadioScan/main/install.sh | RS_HOST=192.168.1.28 bash
+```
+
+`RS_USER` changes the SSH user. `RS_FORCE=1` reinstalls even when the version matches. Quit RadioScan on the
+Miyoo before updating.
+
+Without SSH, install by hand:
+
 1. Download `RadioScan.zip` from the latest [Release](../../releases) (or the `RadioScan-miyoo` artifact of an
    [Actions build](../../actions)) and unzip it.
 2. Copy the `RadioScan` folder to `/mnt/SDCARD/App/` (so you have `App/RadioScan/launch.sh`).
 3. Make sure Wi-Fi is on in OnionOS, then open **Apps → RadioScan**.
 
 With the card mounted on a computer, `make install SD=/path/to/card` copies the built app into `App/`.
+
+### Updating from the Miyoo
+
+Once it's installed, RadioScan keeps itself up to date. A few seconds after it starts, it asks GitHub for the
+latest release (retrying each minute, up to five times, while Wi-Fi comes up). When there's a newer one it asks
+**A update and restart / B not now**. A downloads the release's `RadioScan.zip` (about 1 MB) while the radio keeps
+playing, checks every file, swaps them in and starts the new version. Your stations and settings stay as they are.
+If anything goes wrong on the way, nothing is changed. B asks again next time you open the app. `RS_UPDATE=0` in
+`launch.sh` turns the check off. An update replaces `launch.sh`, so set any of its switches again afterwards.
 
 ## Controls
 
@@ -263,8 +292,9 @@ Keyboard on desktop, matching the Miyoo's key codes:
 
 ### Releasing
 
-Any of these builds, tests and publishes a GitHub Release with `RadioScan.zip` attached (notes come from
-`.github/release-notes.md`):
+First set `RS_VERSION` in `src/update.h` to the new version: the app compares it with the release tag to decide
+whether it's out of date, so the release job refuses a tag that doesn't match. Then any of these builds, tests
+and publishes a GitHub Release with `RadioScan.zip` attached (notes come from `.github/release-notes.md`):
 
 - **Actions → build → Run workflow**, with a tag such as `v0.2.0` filled in.
 - Push a version tag: `git tag v0.2.0 && git push origin v0.2.0`.
@@ -280,7 +310,11 @@ It reports level, the voice/music verdict for each stream, and DSP cost.
 `radioscan --synctest LEAD|FOLLOW|AUTO [bpm] [seconds]` runs only the clock and Wi-Fi sync, then prints
 whether it found peers, who led and how far apart the units ended up. Run two or more on the same network.
 
-CI runs both on every push.
+`radioscan --update [--force]` checks for a newer release and installs it into `RADIOSCAN_DIR`, the way the app
+does. `tools/fake_github.py` serves a local zip as GitHub's latest release, redirect and all; point
+`RS_UPDATE_API` at it (`http://127.0.0.1:8766/latest.json`) to test an update without publishing one.
+
+CI runs all three on every push.
 
 ## Settings
 
@@ -296,6 +330,8 @@ performance CPU governor, and keeps the device awake. It has a few optional swit
 - `RS_RATE`: engine rate (48000 by default, the hardware's native rate; 32000 is lighter on the CPU).
 - `RS_ROTATE180`: the picture is turned 180° for the Mini Plus panel by default; set it to 0 if your screen
   shows it upside down.
+- `RS_UPDATE`: set it to 0 to stop RadioScan checking GitHub for updates (on by default on the Miyoo, off on
+  the desktop).
 
 ## Performance
 
