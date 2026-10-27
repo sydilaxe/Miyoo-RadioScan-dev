@@ -70,6 +70,10 @@ a wavefolder, echo and space.
   With scan off the voice glides back to its own station. The station name shows `~` while it is away.
 - **Mix.** One page of faders with live meters: each voice's level and drive, how loud each effect comes back
   (cross, shape, echo, space), the limiter and the master volume.
+- **RAW.** Hold MENU + SELECT for the two stations exactly as they arrive, through one crossfader and nothing else:
+  no engine, no effects, no leveller, limiter or dither. With the fader at one end, that station comes out
+  sample for sample as it was decoded. In between it's a plain linear crossfade, which can't add up louder than the
+  louder station, so nothing clips. See [RAW](#raw) below.
 - **Stations.** 35 are preloaded and you can add more three ways:
   1. Edit `stations.txt` on the SD card (`Name|URL|voice|music|sound`).
   2. Type a URL on the on-screen keyboard (RADIO page, **Y**).
@@ -124,8 +128,29 @@ and the five stages, with the stage you're editing ringed.
 | ![engine](docs/engine.png) | ![rhythm](docs/rhythm.png) |
 | ![radio](docs/radio.png) | ![sound gestures](docs/playmod.png) |
 | ![mix](docs/mix.png) | ![mod](docs/mod.png) |
+| ![raw](docs/raw.png) | |
 
 ## Install
+
+Turn on SSH on the Miyoo (Apps > Tweaks > Network > SSH). Then run this on a computer on the same network:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/sydilaxe/RadioScan/main/install.sh | bash
+```
+
+The script finds the Miyoo by scanning the local /24 for Onion's SSH server. It checks the installed version
+against the latest [release](../../releases), and if the release is newer it copies it to `SD:/App/RadioScan`.
+Your `stations.txt` and `settings.cfg` are kept. Run it again any time to update. Log in with Onion's default
+`onion` / `onion`. The address that worked is saved in `~/.config/radioscan/host`. To skip the scan, set `RS_HOST`:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/sydilaxe/RadioScan/main/install.sh | RS_HOST=192.168.1.28 bash
+```
+
+`RS_USER` changes the SSH user. `RS_FORCE=1` reinstalls even when the version matches. Quit RadioScan on the
+Miyoo before updating.
+
+Without SSH, install by hand:
 
 1. Download `RadioScan.zip` from the latest [Release](../../releases) (or the `RadioScan-miyoo` artifact of an
    [Actions build](../../actions)) and unzip it.
@@ -133,6 +158,15 @@ and the five stages, with the stage you're editing ringed.
 3. Make sure Wi-Fi is on in OnionOS, then open **Apps → RadioScan**.
 
 With the card mounted on a computer, `make install SD=/path/to/card` copies the built app into `App/`.
+
+### Updating from the Miyoo
+
+Once it's installed, RadioScan keeps itself up to date. A few seconds after it starts, it asks GitHub for the
+latest release (retrying each minute, up to five times, while Wi-Fi comes up). When there's a newer one it asks
+**A update and restart / B not now**. A downloads the release's `RadioScan.zip` (about 1 MB) while the radio keeps
+playing, checks every file, swaps them in and starts the new version. Your stations and settings stay as they are.
+If anything goes wrong on the way, nothing is changed. B asks again next time you open the app. `RS_UPDATE=0` in
+`launch.sh` turns the check off. An update replaces `launch.sh`, so set any of its switches again afterwards.
 
 ## Controls
 
@@ -164,6 +198,7 @@ ring is outlined, and every change shows its pattern briefly, like `A  E(5,8) >2
 | SELECT | tap tempo |
 | START | go to EDIT |
 | hold MENU + START | clean slate (any screen): both voices plain LIVE feeds, no effects |
+| hold MENU + SELECT | RAW in / out (any screen): the two stations untouched, with a crossfader |
 | MENU twice | quit |
 
 **EDIT** (RADIO, VOICES, RHYTHM, ENGINE, MOD, MIX)
@@ -196,6 +231,31 @@ pitch, crush, oscillator or drive, unmuted), the gate, stutter and cross rhythms
 are kept for when you turn them back on), and every effect goes neutral: cross-modulation, filter, EQ, drive, fold,
 crush, echo, space and width, with the MIX returns at unity, the limiter's push off and every LFO's depth at 0 (so
 radio scan stops and the voices glide home). Echo and reverb tails are cleared. Stations, volume, tempo, sync and the clock output stay. The sound fades out and back in over 10 ms, so it doesn't click.
+
+### RAW
+
+Hold **MENU + SELECT** (from any screen) to hear the two stations untouched, with one crossfader between them.
+Hold MENU + SELECT again to go back to the engine. The switch either way is a 10 ms crossfade, so it doesn't click.
+
+| Button | Action |
+|---|---|
+| D-pad left / right | move the fader (hold B to move it slowly) |
+| L1 / R1 | fade all the way to A / B, taking the fade time |
+| A | fade across to the other side |
+| Y | fade to the centre |
+| D-pad up / down | fade time: cut, 0.5, 1, 2, 4, 8 or 16 s for the whole way across |
+| hold L2 + up / down | the previous / next station on A |
+| hold R2 + up / down | the previous / next station on B |
+| START | EDIT (the RADIO page picks stations too); START again comes back to RAW |
+
+Each side shows its station, its song title, a meter of the stream as it arrives and how much the fader lets
+through. Only the crossfade happens to the sound. At either end of the fader the other station is
+silent and this one comes out sample for sample as decoded, when the station's sample rate matches the
+output (48 kHz by default; a 44.1 kHz station is still resampled to fit the hardware). In between, the mix is
+`A × (1 − x) + B × x`, eased over 5 ms so a jump doesn't click. The engine keeps running underneath, unheard, so the
+tempo, Wi-Fi sync and every setting are just as you left them when you come back. Radio scan pauses while RAW is
+on. RAW, the fader and the fade time are saved, so RadioScan opens in RAW if you left it there. RAW is stereo even
+when the output is set to mono + clock.
 
 ## Wi-Fi sync
 
@@ -271,8 +331,9 @@ Keyboard on desktop, matching the Miyoo's key codes:
 
 ### Releasing
 
-Any of these builds, tests and publishes a GitHub Release with `RadioScan.zip` attached (notes come from
-`.github/release-notes.md`):
+First set `RS_VERSION` in `src/update.h` to the new version: the app compares it with the release tag to decide
+whether it's out of date, so the release job refuses a tag that doesn't match. Then any of these builds, tests
+and publishes a GitHub Release with `RadioScan.zip` attached (notes come from `.github/release-notes.md`):
 
 - **Actions → build → Run workflow**, with a tag such as `v0.2.0` filled in.
 - Push a version tag: `git tag v0.2.0 && git push origin v0.2.0`.
@@ -289,7 +350,11 @@ It reports level, the voice/music verdict for each stream, and DSP cost.
 `radioscan --synctest LEAD|FOLLOW|AUTO [bpm] [seconds]` runs only the clock and Wi-Fi sync, then prints
 whether it found peers, who led and how far apart the units ended up. Run two or more on the same network.
 
-CI runs both on every push.
+`radioscan --update [--force]` checks for a newer release and installs it into `RADIOSCAN_DIR`, the way the app
+does. `tools/fake_github.py` serves a local zip as GitHub's latest release, redirect and all; point
+`RS_UPDATE_API` at it (`http://127.0.0.1:8766/latest.json`) to test an update without publishing one.
+
+CI runs all three on every push.
 
 ## Settings
 
@@ -305,6 +370,8 @@ performance CPU governor, and keeps the device awake. It has a few optional swit
 - `RS_RATE`: engine rate (48000 by default, the hardware's native rate; 32000 is lighter on the CPU).
 - `RS_ROTATE180`: the picture is turned 180° for the Mini Plus panel by default; set it to 0 if your screen
   shows it upside down.
+- `RS_UPDATE`: set it to 0 to stop RadioScan checking GitHub for updates (on by default on the Miyoo, off on
+  the desktop).
 
 ## Performance
 

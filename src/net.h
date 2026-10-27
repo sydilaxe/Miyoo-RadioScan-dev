@@ -20,7 +20,8 @@ typedef struct {
     int icy_metaint;
     char icy_name[128];
     int icy_br;
-    char location[1024];
+    char location[4096];   /* redirects: GitHub's signed download links run to ~1000 characters */
+    long content_length;   /* -1 if the server didn't say */
     volatile int *abort_flag; /* optional: read() returns -1 once *abort_flag != abort_value */
     int abort_value;
 } HttpConn;

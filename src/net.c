@@ -270,8 +270,9 @@ int http_read(HttpConn *c, void *dst, int n)
 
 static int open_once(HttpConn *c, const char *url, int want_icy, char *err, size_t errlen)
 {
-    char host[256], path[1024];
+    char host[256], path[4096];
     int port, tls;
+    c->content_length = -1;
     if (parse_url(url, host, sizeof host, &port, path, sizeof path, &tls)) {
         snprintf(err, errlen, "Bad URL");
         return -1;
@@ -280,7 +281,7 @@ static int open_once(HttpConn *c, const char *url, int want_icy, char *err, size
     if (c->fd < 0) return -1;
     if (tls && tls_start(c, host, err, errlen)) return -1;
 
-    char req[1600];
+    char req[4600];
     int len = snprintf(req, sizeof req,
                        "GET %s HTTP/1.1\r\nHost: %s%s%.0d\r\nUser-Agent: " USER_AGENT "\r\n"
                        "Accept: */*\r\n%sConnection: close\r\n\r\n",
@@ -290,7 +291,7 @@ static int open_once(HttpConn *c, const char *url, int want_icy, char *err, size
         snprintf(err, errlen, "Send failed");
         return -1;
     }
-    char line[1024];
+    char line[4200];
     if (read_line(c, line, sizeof line) < 0) { snprintf(err, errlen, "No response"); return -1; }
     /* "HTTP/1.1 200 OK" or Shoutcast v1 "ICY 200 OK" */
     char *sp = strchr(line, ' ');
@@ -305,6 +306,7 @@ static int open_once(HttpConn *c, const char *url, int want_icy, char *err, size
         else if (!strcasecmp(line, "icy-name")) snprintf(c->icy_name, sizeof c->icy_name, "%s", v);
         else if (!strcasecmp(line, "icy-br")) c->icy_br = atoi(v);
         else if (!strcasecmp(line, "location")) snprintf(c->location, sizeof c->location, "%s", v);
+        else if (!strcasecmp(line, "content-length")) c->content_length = atol(v);
         else if (!strcasecmp(line, "transfer-encoding") && strstr(v, "chunked")) { c->chunked = 1; c->chunk_left = -1; }
     }
     return 0;
@@ -312,7 +314,7 @@ static int open_once(HttpConn *c, const char *url, int want_icy, char *err, size
 
 int http_open(HttpConn *c, const char *url, int want_icy, char *err, size_t errlen)
 {
-    char cur[1024];
+    char cur[4096];
     volatile int *af = c->abort_flag;
     int av = c->abort_value;
     snprintf(cur, sizeof cur, "%s", url);
@@ -324,9 +326,9 @@ int http_open(HttpConn *c, const char *url, int want_icy, char *err, size_t errl
         c->abort_value = av;
         if (open_once(c, cur, want_icy, err, errlen)) { http_close(c); return -1; }
         if (c->status >= 300 && c->status < 400 && c->location[0]) {
-            char next[1024];
+            char next[4096];
             if (c->location[0] == '/') { /* relative redirect */
-                char host[256], path[1024];
+                char host[256], path[4096];
                 int port, tls;
                 parse_url(cur, host, sizeof host, &port, path, sizeof path, &tls);
                 snprintf(next, sizeof next, "%s://%s:%d%s", tls ? "https" : "http", host, port, c->location);

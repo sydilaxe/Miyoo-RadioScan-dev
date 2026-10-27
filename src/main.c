@@ -28,6 +28,7 @@
 #include "stations.h"
 #include "stream.h"
 #include "sync.h"
+#include "update.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -71,12 +72,21 @@ static Stream *st[2];
 static Stream *st_next[2];
 static volatile int xf_state[2];
 static volatile float xf_pos[2], xf_step[2];
+/* RAW: the two streams just as they arrive, through one crossfader, with nothing else in the way: no engine, no
+ * effects, no leveller, limiter or dither. The engine keeps running underneath, unheard, so the clock, Wi-Fi sync and
+ * everything as it was carry on for when RAW is left. raw_xf: 0 all A .. 1 all B, set by the main thread;
+ * raw_peak: each stream's loudest sample since the screen last looked. */
+static volatile int raw_on;
+static volatile float raw_xf = 0.5f;
+static volatile float raw_peak[2];
+static const float raw_fade_s[] = {0, 0.5f, 1, 2, 4, 8, 16}; /* how long L1 / R1 / A take to fade all the way across */
+#define RAW_FADES ((int)(sizeof raw_fade_s / sizeof raw_fade_s[0]))
 static int audio_rate = 48000;
 static StationList stations;
 static char app_dir[PATH_MAX], stations_path[PATH_MAX + 16], settings_path[PATH_MAX + 16];
 
-enum { SCR_PLAY, SCR_EDIT };
-enum { OV_NONE, OV_KEYBOARD, OV_SCANMENU, OV_SCANRESULTS };
+enum { SCR_PLAY, SCR_EDIT, SCR_RAW };
+enum { OV_NONE, OV_KEYBOARD, OV_SCANMENU, OV_SCANRESULTS, OV_UPDATE };
 enum { KB_ADD_URL, KB_ADD_NAME, KB_SEARCH };
 enum { TAB_RADIO, TAB_VOICES, TAB_RHYTHM, TAB_ENGINE, TAB_MOD, TAB_MIX, TAB_COUNT };
 static const char *const tab_names[TAB_COUNT] = {"RADIO", "VOICES", "RHYTHM", "ENGINE", "MOD", "MIX"};
@@ -113,6 +123,10 @@ static struct {
     int dirty_settings;
     int repeating;
     int running;
+    int raw_fade;             /* RAW: index into raw_fade_s, how long L1 / R1 / A take to fade across */
+    float raw_to;             /* RAW: where a fade is heading (0 A .. 1 B), or -1 when the fader is still */
+    int update_asked, update_tries; /* the update prompt has been shown this session; checks made */
+    Uint32 update_next_check, relaunch_at;
 } ui;
 
 /* ================================================================== audio */
@@ -136,6 +150,36 @@ static void read_voice(int o, float *buf, int n)
     }
     xf_pos[o] = g;
     if (g >= 1) xf_state[o] = 3;
+}
+
+static float raw_w; /* audio thread: 0 the engine .. 1 RAW */
+
+/* RAW: bufO becomes A * (1 - x) + B * x, the fader x eased over ~5 ms so a jump doesn't click. It lands exactly, so
+ * a fader at either end passes that stream through untouched, and a linear fade never adds up past the louder
+ * stream, so nothing can clip and nothing needs limiting. Going in and out of RAW crossfades with the engine's
+ * output over 10 ms. Returns 1 when the whole buffer was RAW alone. */
+static int raw_mix(int n)
+{
+    static float x = -1;
+    float w = raw_w, target = raw_xf, want = raw_on ? 1.0f : 0.0f, pk[2] = {raw_peak[0], raw_peak[1]};
+    float k = 1.0f - expf(-1.0f / (0.005f * audio_rate)), step = 1.0f / (0.01f * audio_rate);
+    if (x < 0) x = target;
+    int pure = w >= 1 && want >= 1;
+    for (int i = 0; i < n; i++) {
+        x += (target - x) * k;
+        if (fabsf(target - x) < 1e-4f) x = target;
+        w = w < want ? fminf(w + step, want) : fmaxf(w - step, want);
+        for (int c = 0; c < 2; c++) {
+            float a = bufA[i * 2 + c], b = bufB[i * 2 + c];
+            pk[0] = fmaxf(pk[0], fabsf(a));
+            pk[1] = fmaxf(pk[1], fabsf(b));
+            bufO[i * 2 + c] = bufO[i * 2 + c] * (1 - w) + (a * (1 - x) + b * x) * w;
+        }
+    }
+    raw_w = w;
+    raw_peak[0] = pk[0];
+    raw_peak[1] = pk[1];
+    return pure;
 }
 
 /* Treat denormal floats as zero in the audio thread: decaying reverb/filter tails otherwise
@@ -207,6 +251,15 @@ static void audio_cb(void *ud, Uint8 *stream, int len)
         read_voice(0, bufA, n);
         read_voice(1, bufB, n);
         synth_process(syn, bufA, bufB, bufO, n);
+        if ((raw_on || raw_w > 0) && raw_mix(n)) { /* RAW alone: straight to 16 bits, no dither */
+            for (int i = 0; i < n * 2; i++) {
+                float v = bufO[i] * 32768.0f; /* the streams' own scale, so 16-bit samples come back as they were */
+                out[i] = (int16_t)lrintf(v > 32767.0f ? 32767.0f : v < -32768.0f ? -32768.0f : v);
+            }
+            out += n * 2;
+            frames -= n;
+            continue;
+        }
         static unsigned dith = 22222;
         /* mono + clock: the clock side is pulses, not sound, so it goes out exactly, without dither */
         int clk_ch = (int)synth_get_param(syn, P_OUTPUT) == OUT_MONO_CLOCK ? !(int)synth_get_param(syn, P_CLK_SIDE) : -1;
@@ -487,7 +540,8 @@ static void write_settings(int background)
         int idx = (int)synth_get_param(syn, P_A_STATION + o * OSC_STRIDE);
         if (idx >= 0 && idx < stations.count) n += snprintf(save_buf + n, cap - n, "%c_url=%s\n", 'a' + o, stations.items[idx].url);
     }
-    if (n < cap) snprintf(save_buf + n, cap - n, "octave=%d\n", ui.octave);
+    if (n < cap) n += snprintf(save_buf + n, cap - n, "octave=%d\n", ui.octave);
+    if (n < cap) snprintf(save_buf + n, cap - n, "raw=%d\nraw_xf=%g\nraw_fade=%d\n", raw_on, raw_xf, ui.raw_fade);
     ui.dirty_settings = 0;
     save_busy = 1;
     pthread_t t;
@@ -519,6 +573,9 @@ static int load_settings(void)
         char *v = eq + 1;
         v[strcspn(v, "\r\n")] = 0;
         if (!strcmp(line_, "octave")) { ui.octave = atoi(v); continue; }
+        if (!strcmp(line_, "raw")) { raw_on = atoi(v) != 0; continue; }
+        if (!strcmp(line_, "raw_xf")) { float x = (float)atof(v); raw_xf = x < 0 ? 0 : x > 1 ? 1 : x; continue; }
+        if (!strcmp(line_, "raw_fade")) { ui.raw_fade = atoi(v); continue; }
         if ((line_[0] == 'a' || line_[0] == 'b') && !strcmp(line_ + 1, "_url")) {
             int idx = stations_find_url(&stations, v); /* URL wins over a stale index */
             synth_set_param(syn, P_A_STATION + (line_[0] - 'a') * OSC_STRIDE, (float)idx);
@@ -530,6 +587,7 @@ static int load_settings(void)
     }
     fclose(f);
     if (ui.octave < -3 || ui.octave > 3) ui.octave = 0;
+    if (ui.raw_fade < 0 || ui.raw_fade >= RAW_FADES) ui.raw_fade = 3;
     return 0;
 }
 
@@ -901,6 +959,75 @@ static void draw_scan_results(void)
     char c[32];
     snprintf(c, sizeof c, "%d/%d", ui.scan_sel + 1, n);
     text_right(604, 50, c, C_DIM, 0);
+}
+
+/* ================================================================== self-update */
+
+static int update_auto; /* check GitHub for a newer release: on the Miyoo, or with RS_UPDATE=1 */
+
+/* a few seconds after starting (so Wi-Fi is up), then every minute until GitHub has answered, five tries */
+static void update_watch(Uint32 now)
+{
+    const UpdateStatus *u = update_status();
+    if (update_auto && (u->state == UP_IDLE || u->state == UP_CHECK_FAILED) && ui.update_tries < 5 &&
+        now >= ui.update_next_check) {
+        if (u->state == UP_CHECK_FAILED) ev("  %s", u->err);
+        ui.update_tries++;
+        ui.update_next_check = now + 60000;
+        update_check_start();
+    }
+    if (u->state == UP_AVAILABLE && !ui.update_asked && ui.overlay == OV_NONE) {
+        ui.update_asked = 1;
+        ui.overlay = OV_UPDATE;
+        ev("  update: v%s is out (this is v" RS_VERSION ")", u->latest);
+    }
+    if (u->state == UP_INSTALLED && !ui.relaunch_at) {
+        ev("  update: v%s installed, relaunching", u->latest);
+        ui.relaunch_at = now + 1200; /* long enough to read "restarting" */
+    }
+    if (ui.relaunch_at && now >= ui.relaunch_at) ui.running = 0;
+}
+
+static void update_input(int b)
+{
+    const UpdateStatus *u = update_status();
+    if (u->state == UP_INSTALLING || u->state == UP_INSTALLED) return;
+    if (b == B_A && (u->state == UP_AVAILABLE || u->state == UP_FAILED)) { update_install_start(app_dir); return; }
+    if (b == B_B || b == B_MENU) {
+        ui.overlay = OV_NONE;
+        if (u->state == UP_AVAILABLE) toast("v%s will be offered again next time", u->latest);
+    }
+}
+
+static void draw_update(void)
+{
+    const UpdateStatus *u = update_status();
+    char b[200];
+    fill(60, 130, 520, 220, C_PANEL);
+    snprintf(b, sizeof b, "RadioScan v%s is out", u->latest);
+    text_center(320, 150, b, C_LEAF, 0);
+    text_center(320, 176, "you have v" RS_VERSION, C_DIM, 0);
+    if (u->state == UP_INSTALLING || u->state == UP_INSTALLED) {
+        float t = SDL_GetTicks() / 1000.0f;
+        for (int i = 0; i < 5; i++) {
+            int x, y;
+            polar(320, 250, 26, t * 0.4f + i / 5.0f, &x, &y);
+            disc(x, y, 4, ring_cols[i]);
+        }
+        if (u->state == UP_INSTALLED) snprintf(b, sizeof b, "updated - restarting...");
+        else snprintf(b, sizeof b, "downloading... %d%%", u->progress);
+        text_center(320, 300, b, C_TEXT, 0);
+        return;
+    }
+    if (u->state == UP_FAILED) {
+        text_center(320, 220, u->err, C_RUST, 50);
+        text_center(320, 244, "nothing was changed", C_DIM, 0);
+        text_center(320, 310, "A try again    B close", C_TEXT, 0);
+        return;
+    }
+    text_center(320, 220, "download it now and restart?", C_TEXT, 0);
+    text_center(320, 244, "your stations and settings stay as they are", C_DIM, 0);
+    text_center(320, 310, "A update and restart    B not now", C_TEXT, 0);
 }
 
 /* ================================================================== shared widgets */
@@ -1497,6 +1624,75 @@ static void draw_play(void)
     text(16, 455, "L1/R1 pitch  L2 grab  SELECT tap  START edit  MENU x2 quit", C_PANEL2, 0);
 }
 
+/* ================================================================== RAW screen */
+
+#define RAW_X0 64 /* the crossfader's travel */
+#define RAW_X1 576
+#define RAW_Y 276
+
+static void draw_raw(void)
+{
+    static float shown[2];
+    fill(0, 0, SCREEN_W, SCREEN_H, C_BG);
+    text(16, 8, "radioscan", C_DIM, 0);
+    text(126, 8, "RAW", C_TEXT, 0);
+    text_right(624, 8, "no engine, no effects", C_PANEL2, 0);
+    float x = raw_xf;
+    for (int o = 0; o < 2; o++) {
+        int x0 = o ? 332 : 24, w = 284, cx = x0 + w / 2;
+        float g = o ? x : 1 - x; /* this stream's share */
+        Uint32 col = osc_col(o);
+        fill(x0, 44, w, 168, C_PANEL);
+        disc(cx, 80, 22, mix_col(C_PANEL2, col, 0.25f + 0.75f * g));
+        text_center(cx, 71, o ? "B" : "A", C_BG, 0);
+        text_center(cx, 116, osc_station_name(o), C_TEXT, 27);
+        char line_[256];
+        osc_status_line(o, line_, sizeof line_);
+        text_center(cx, 138, line_, C_DIM, 27);
+        /* the stream's level as it arrives (-48 .. 0 dB), then what the fader lets through */
+        shown[o] = fmaxf(raw_peak[o], shown[o] * 0.8f);
+        raw_peak[o] = 0;
+        float db = 20.0f * log10f(shown[o] + 1e-6f), mf = (db + 48.0f) / 48.0f;
+        mf = mf < 0 ? 0 : mf > 1 ? 1 : mf;
+        int mx = x0 + 20, mw = w - 40;
+        fill(mx, 168, mw, 8, C_BG);
+        fill(mx, 168, (int)(mf * mw), 8, db > -1.0f ? C_RUST : col);
+        char gs[24];
+        if (g <= 0) snprintf(gs, sizeof gs, "faded out");
+        else if (g >= 1) snprintf(gs, sizeof gs, "fader 0 dB");
+        else snprintf(gs, sizeof gs, "fader %.1f dB", 20.0f * log10f(g));
+        text_center(cx, 184, gs, g > 0 ? C_TEXT : C_DIM, 0);
+    }
+
+    /* the crossfader */
+    text_center(RAW_X0 - 28, RAW_Y - 9, "A", C_LEAF, 0);
+    text_center(RAW_X1 + 28, RAW_Y - 9, "B", C_AMBER, 0);
+    fill(RAW_X0, RAW_Y - 3, RAW_X1 - RAW_X0, 6, C_PANEL2);
+    for (int i = 0; i <= 4; i++) {
+        int tx = RAW_X0 + i * (RAW_X1 - RAW_X0) / 4, th = i == 2 ? 14 : 8;
+        fill(tx, RAW_Y - 22 - th, 1, th, C_DIM);
+    }
+    if (ui.raw_to >= 0) { /* where a fade is heading */
+        int gx = RAW_X0 + (int)(ui.raw_to * (RAW_X1 - RAW_X0));
+        fill(gx - 1, RAW_Y + 24, 3, 10, C_DIM);
+    }
+    int tx = RAW_X0 + (int)(x * (RAW_X1 - RAW_X0));
+    fill(tx - 11, RAW_Y - 20, 23, 41, C_TEXT);
+    fill(tx - 9, RAW_Y, 19, 1, C_BG);
+    char fs[48], fade[16];
+    float f = raw_fade_s[ui.raw_fade];
+    if (f <= 0) snprintf(fade, sizeof fade, "cut");
+    else snprintf(fade, sizeof fade, "%g s", f);
+    const char *to = ui.raw_to <= 0 ? "A" : ui.raw_to >= 1 ? "B" : "centre";
+    if (ui.raw_to >= 0) snprintf(fs, sizeof fs, "fading to %s   fade %s", to, fade);
+    else snprintf(fs, sizeof fs, "fade %s", fade);
+    text_center(320, RAW_Y + 40, fs, C_DIM, 0);
+
+    text_center(320, 352, "<> fader (B held: slow)   L1/R1 fade to A/B   A across", C_DIM, 0);
+    text_center(320, 374, "Y centre   ^v fade time   L2/R2 + ^v station A/B", C_DIM, 0);
+    text(16, 455, "START edit   MENU + SELECT leave RAW   MENU x2 quit", C_PANEL2, 0);
+}
+
 /* ================================================================== EDIT screen */
 
 static int tab_page(int tab) { return tab - 1; } /* VOICES, RHYTHM, ENGINE, MOD, MIX -> PAGE_* */
@@ -1803,7 +1999,8 @@ static void draw_edit(void)
     }
     draw_stages(168, 402, 64, 12, 26, selected_stage(), 0);
     draw_beat(440, 456);
-    text(16, 456, ui.tab == TAB_MIX ? "L1/R1 page  Y reset  START play" : "L1/R1 page  Y dice  START play", C_PANEL2, 0);
+    if (raw_on) text(16, 456, "L1/R1 page  START raw (the engine isn't heard)", C_PANEL2, 0);
+    else text(16, 456, ui.tab == TAB_MIX ? "L1/R1 page  Y reset  START play" : "L1/R1 page  Y dice  START play", C_PANEL2, 0);
 }
 
 /* ================================================================== input */
@@ -1878,6 +2075,72 @@ static void toggle_mute(int o)
     synth_set_param(syn, P_A_MUTE + o * OSC_STRIDE, !voice_muted(o));
     toast(voice_muted(o) ? "voice %c muted" : "voice %c back", 'A' + o);
     ui.dirty_settings = 1;
+}
+
+/* ------------------------------------------------------------------ RAW */
+
+/* in or out of RAW (MENU + SELECT, from anywhere); radio scan waits while it's on */
+static void raw_toggle(void)
+{
+    raw_on = !raw_on;
+    ui.raw_to = -1;
+    ui.menu_armed = 0;
+    ui.screen = raw_on ? SCR_RAW : SCR_PLAY;
+    if (raw_on) { scan_cancel(0); scan_cancel(1); }
+    ui.dirty_settings = 1;
+    toast(raw_on ? "RAW: the two streams as they are" : "RAW off: back to the engine");
+}
+
+static void raw_fade_to(float to)
+{
+    if (raw_fade_s[ui.raw_fade] <= 0) { raw_xf = to; ui.raw_to = -1; ui.dirty_settings = 1; }
+    else ui.raw_to = to;
+}
+
+static void raw_station(int o, int dir)
+{
+    int n = stations.count, cur = station_param(o);
+    if (n < 1) return;
+    int next = cur < 0 ? 0 : ((cur + dir) % n + n) % n;
+    tune_later(o, next);
+    toast("voice %c: %s", 'A' + o, stations.items[next].name);
+}
+
+static void raw_button(int b)
+{
+    float dest = ui.raw_to >= 0 ? ui.raw_to : raw_xf;
+    if (b == B_L1) raw_fade_to(0);
+    if (b == B_R1) raw_fade_to(1);
+    if (b == B_A) raw_fade_to(dest < 0.5f ? 1 : 0);
+    if (b == B_Y) raw_fade_to(0.5f);
+    if ((b == B_UP || b == B_DOWN) && (ui.held[B_L2] || ui.held[B_R2])) { /* L2 / R2 + up / down: a station */
+        if (ui.held[B_L2]) raw_station(0, b == B_UP ? -1 : 1);
+        if (ui.held[B_R2]) raw_station(1, b == B_UP ? -1 : 1);
+    } else if (b == B_UP || b == B_DOWN) { /* the fade time */
+        int f = ui.raw_fade + (b == B_UP ? 1 : -1);
+        ui.raw_fade = f < 0 ? 0 : f >= RAW_FADES ? RAW_FADES - 1 : f;
+        ui.dirty_settings = 1;
+    }
+}
+
+/* the fader follows a held left / right (hold B to go slowly), or glides to where L1 / R1 / A / Y sent it */
+static void raw_update(Uint32 now)
+{
+    static Uint32 last;
+    float dt = last ? (now - last) / 1000.0f : 0, x = raw_xf;
+    last = now;
+    if (dt > 0.1f) dt = 0.1f;
+    int dir = ui.screen == SCR_RAW && ui.overlay == OV_NONE ? ui.held[B_RIGHT] - ui.held[B_LEFT] : 0;
+    if (dir) {
+        ui.raw_to = -1;
+        x += dir * dt / (ui.held[B_B] ? 8.0f : 1.5f);
+    } else if (ui.raw_to >= 0) {
+        float fade = raw_fade_s[ui.raw_fade], d = fade > 0 ? dt / fade : 1;
+        x = x < ui.raw_to ? fminf(x + d, ui.raw_to) : fmaxf(x - d, ui.raw_to);
+        if (x == ui.raw_to) ui.raw_to = -1;
+    }
+    x = x < 0 ? 0 : x > 1 ? 1 : x;
+    if (x != raw_xf) { raw_xf = x; ui.dirty_settings = 1; }
 }
 
 static void cell_say(int q)
@@ -2047,6 +2310,7 @@ static void log_press(int b)
     if (ui.overlay == OV_KEYBOARD) snprintf(where, sizeof where, "keyboard");
     else if (ui.overlay == OV_SCANMENU || ui.overlay == OV_SCANRESULTS) snprintf(where, sizeof where, "scan");
     else if (ui.screen == SCR_PLAY) snprintf(where, sizeof where, "PLAY, %s ring", seq_name(ui.cell));
+    else if (ui.screen == SCR_RAW) snprintf(where, sizeof where, "RAW, fader %.2f", raw_xf);
     else if (ui.tab == TAB_MIX) snprintf(where, sizeof where, "MIX, %s", param_info[mix_strips[ui.sel[TAB_MIX]].id].key);
     else if (ui.tab == TAB_RADIO) snprintf(where, sizeof where, "RADIO, station %d", ui.radio_sel + 1);
     else {
@@ -2068,15 +2332,17 @@ static void on_press(int b)
         toast("clean slate: both voices live, no effects");
         return;
     }
+    if (b == B_SELECT && ui.held[B_MENU]) { raw_toggle(); return; } /* MENU + SELECT, from anywhere: RAW in / out */
     Uint32 now = SDL_GetTicks();
     if (ui.overlay == OV_KEYBOARD) { kb_input(b); return; }
     if (ui.overlay == OV_SCANMENU) { scan_menu_input(b); return; }
     if (ui.overlay == OV_SCANRESULTS) { scan_results_input(b); return; }
+    if (ui.overlay == OV_UPDATE) { update_input(b); return; }
 
     if (b == B_MENU) {
         if (ui.menu_armed && now - ui.menu_armed < 1500) { ui.running = 0; return; }
         ui.menu_armed = now;
-        toast("MENU again to leave, or hold MENU + START: clean slate");
+        toast("MENU again: leave  hold MENU + START: clean, + SELECT: raw");
         return;
     }
     if (ui.screen == SCR_PLAY && ui.held[B_R2] && b != B_R2) { /* sound gestures and dice */
@@ -2087,9 +2353,10 @@ static void on_press(int b)
     }
     if (b == B_SELECT) { tap_tempo(); return; }
     if (b == B_START) {
-        ui.screen = ui.screen == SCR_PLAY ? SCR_EDIT : SCR_PLAY;
+        ui.screen = ui.screen != SCR_EDIT ? SCR_EDIT : raw_on ? SCR_RAW : SCR_PLAY;
         return;
     }
+    if (ui.screen == SCR_RAW) { raw_button(b); return; }
 
     if (ui.screen == SCR_PLAY) {
         if (b == B_L2) { ui.l2_used = 0; return; }
@@ -2344,7 +2611,9 @@ static void radio_scan(Uint32 now)
 static void logic_update(Uint32 now)
 {
     log_watch(now);
-    radio_scan(now);
+    update_watch(now);
+    if (!raw_on) radio_scan(now);
+    raw_update(now);
     audio_watch(now);
     for (int o = 0; o < 2; o++)
         if (ui.pending_station[o] >= -1 && now >= ui.pending_at[o]) tune_now(o, ui.pending_station[o]);
@@ -2360,6 +2629,10 @@ static void logic_update(Uint32 now)
     const float *p = synth_params(syn);
     for (int i = 0; i < P_COUNT; i++) { unsigned v; memcpy(&v, &p[i], sizeof v); h = (h ^ v) * 16777619u; }
     h = (h ^ (unsigned)ui.octave) * 16777619u;
+    float rx = raw_xf;
+    unsigned rv;
+    memcpy(&rv, &rx, sizeof rv);
+    h = (h ^ rv ^ (unsigned)raw_on << 30 ^ (unsigned)ui.raw_fade << 26) * 16777619u;
     if (h != last_hash) { last_hash = h; last_change = now; }
     if (ui.dirty_settings && now - last_change > 4000) write_settings(1);
     audio_report(now);
@@ -2389,10 +2662,12 @@ static void render(void)
 {
     update_blooms();
     if (ui.screen == SCR_PLAY) draw_play();
+    else if (ui.screen == SCR_RAW) draw_raw();
     else draw_edit();
     if (ui.overlay == OV_KEYBOARD) draw_keyboard();
     else if (ui.overlay == OV_SCANMENU) draw_scan_menu();
     else if (ui.overlay == OV_SCANRESULTS) draw_scan_results();
+    else if (ui.overlay == OV_UPDATE) draw_update();
     draw_toast();
 }
 
@@ -2428,11 +2703,14 @@ static void init_common(void)
     ui.pending_station[0] = ui.pending_station[1] = -2;
     ui.tuned[0] = ui.tuned[1] = -2;
     ui.tab = TAB_VOICES;
+    ui.raw_fade = 3; /* 2 s */
+    ui.raw_to = -1;
     if (load_settings() < 0) { /* first run: music on A, a talk station sliced into rhythm on B */
         synth_set_param(syn, P_A_STATION, (float)first_of_kind(CAT_MUSIC, 0));
         synth_set_param(syn, P_B_STATION, (float)first_of_kind(CAT_VOICE, 1));
     }
     if (settings_were_reset) toast("new version: sound settings reset, stations kept");
+    if (raw_on) ui.screen = SCR_RAW;
     set_pitch();
     for (int o = 0; o < 2; o++) {
         int idx = station_param(o);
@@ -2482,6 +2760,8 @@ static int offline_render(int argc, char **argv)
         if (!strcmp(k, "note")) { synth_note_on(syn, (int)v); continue; }
         if (!strcmp(k, "grab")) { synth_grab(syn, -1); continue; }
         if (!strcmp(k, "dice")) { synth_dice(syn, (int)v); continue; }
+        if (!strcmp(k, "raw")) { raw_on = v != 0; continue; }
+        if (!strcmp(k, "raw_xf")) { raw_xf = v; continue; }
         for (int p = 0; p < P_COUNT; p++)
             if (!strcmp(param_info[p].key, k)) synth_set_param(syn, p, v);
     }
@@ -2576,8 +2856,20 @@ int main(int argc, char **argv)
                    category_names[scan_tmp.items[i].cat]);
         return 0;
     }
+    if (argc >= 2 && !strcmp(argv[1], "--update")) { /* --update: check GitHub (or RS_UPDATE_API) and install into the app folder */
+        char ca[PATH_MAX + 16];
+        snprintf(ca, sizeof ca, "%s/cacert.pem", app_dir);
+        net_init(ca);
+        const UpdateStatus *u = update_status();
+        if (update_check()) { fprintf(stderr, "%s\n", u->err); return 1; }
+        printf("this is v" RS_VERSION ", the latest release is v%s\n", u->latest);
+        if (u->state != UP_AVAILABLE && !(argc > 2 && !strcmp(argv[2], "--force"))) return 0;
+        if (update_install(app_dir)) { fprintf(stderr, "update failed: %s\n", u->err); return 1; }
+        printf("installed v%s into %s\n", u->latest, app_dir);
+        return 0;
+    }
 
-    /* --shot file.bmp <play|edit|radio|motion|kb|scan> [tab] : render one frame (for docs/tests) */
+    /* --shot file.bmp <play|edit|radio|motion|kb|scan|update> [tab] : render one frame (for docs/tests) */
     const char *shot = NULL, *shot_view = "play";
     int shot_tab = TAB_VOICES;
     if (argc >= 3 && !strcmp(argv[1], "--shot")) {
@@ -2653,8 +2945,21 @@ int main(int argc, char **argv)
         if (!strcmp(shot_view, "engine")) ui.tab = TAB_ENGINE;
         if (!strcmp(shot_view, "mod")) ui.tab = TAB_MOD;
         if (!strcmp(shot_view, "mix")) ui.tab = TAB_MIX;
+        if (!strcmp(shot_view, "raw")) { /* RAW, partway from A to B */
+            ui.screen = SCR_RAW;
+            raw_on = 1;
+            raw_xf = 0.3f;
+            raw_peak[0] = 0.5f;
+            raw_peak[1] = 0.2f;
+        }
         if (!strcmp(shot_view, "kb")) open_keyboard(KB_ADD_URL, "http://ice1.somafm.com/");
         if (!strcmp(shot_view, "scan")) ui.overlay = OV_SCANMENU;
+        if (!strcmp(shot_view, "update")) { /* the prompt, as if v9.9.9 were out */
+            UpdateStatus *u = (UpdateStatus *)update_status();
+            snprintf(u->latest, sizeof u->latest, "9.9.9");
+            u->state = UP_AVAILABLE;
+            ui.overlay = OV_UPDATE;
+        }
         /* let the engine run a moment so the rings and waves have something to show */
         static float fa[2048], fb[2048], fo[2048];
         for (int i = 0; i < 2048; i++) { /* A: noisy, bursty; B: a plain tone */
@@ -2680,6 +2985,12 @@ int main(int argc, char **argv)
     sync_init(&sync_clock);
     signal(SIGTERM, on_signal);
     signal(SIGINT, on_signal);
+#ifdef __arm__
+    update_auto = 1;
+#endif
+    if (getenv("RS_UPDATE")) update_auto = atoi(getenv("RS_UPDATE")) != 0;
+    ui.update_next_check = SDL_GetTicks() + 5000;
+    fprintf(stderr, "radioscan v" RS_VERSION ": update check %s\n", update_auto ? "on" : "off");
     fprintf(stderr, "radioscan: audio %s at %d Hz, %d frames/buffer\n", audio_ok ? "open" : "FAILED", audio_rate, buffer);
     ui.running = 1;
     ev_t0 = SDL_GetTicks();
@@ -2729,5 +3040,5 @@ int main(int argc, char **argv)
     stream_destroy(st_next[1]);
     synth_destroy(syn);
     SDL_Quit();
-    return 0;
+    return update_status()->state == UP_INSTALLED ? RELAUNCH_STATUS : 0; /* launch.sh starts the new version */
 }
