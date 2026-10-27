@@ -43,6 +43,13 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+      - name: Check the tag matches RS_VERSION
+        env:
+          TAG: ${{ inputs.release_tag || github.event.release.tag_name || github.ref_name }}
+        run: |
+          # the app compares the release tag with its own RS_VERSION; a mismatch would offer the update forever
+          v=$(sed -n 's/^#define RS_VERSION "\([^"]*\)".*/\1/p' src/update.h)
+          [ "$TAG" = "v$v" ] || { echo "::error::tag $TAG doesn't match RS_VERSION $v in src/update.h"; exit 1; }
       - uses: actions/download-artifact@v4
         with:
           name: RadioScan-zip
@@ -86,6 +93,20 @@ jobs:
           RS_FAST=1 RADIOSCAN_DIR=t ./build/desktop/radioscan --render 2 t/clock24.wav output=1 bpm=120 clock_ppqn=5 clock_side=1 2>/dev/null
           python3 tools/clockcheck.py t/clock24.wav left | tee t/clock24.txt
           grep -q "clock out on the left: 96 pulses, mean gap 20.83 ms, .* other values 0" t/clock24.txt
+      - name: Self-update test against a local fake GitHub
+        run: |
+          mkdir -p rel/RadioScan && cp -r App/RadioScan/. rel/RadioScan/ && cp build/desktop/radioscan rel/RadioScan/
+          echo 9.9.9 > rel/RadioScan/VERSION
+          (cd rel && zip -qr RadioScan.zip RadioScan)
+          python3 tools/fake_github.py rel --port 8767 --tag v9.9.9 &
+          for i in $(seq 1 30); do curl -s -o /dev/null http://127.0.0.1:8767/latest.json && break; sleep 1; done
+          mkdir -p u && cp App/RadioScan/cacert.pem u/ && echo 'Mine|http://example.com/mine|music' > u/stations.txt
+          RS_UPDATE_API=http://127.0.0.1:8767/latest.json RADIOSCAN_DIR=u ./build/desktop/radioscan --update
+          cmp u/radioscan rel/RadioScan/radioscan
+          cmp u/launch.sh rel/RadioScan/launch.sh
+          test "$(cat u/VERSION)" = 9.9.9
+          test "$(cat u/stations.txt)" = 'Mine|http://example.com/mine|music'   # the user's stations are kept
+          ! ls u/*.new 2>/dev/null
       - name: Wi-Fi sync test (two units on this machine)
         run: |
           ./build/desktop/radioscan --synctest LEAD 97 6 > lead.txt &
