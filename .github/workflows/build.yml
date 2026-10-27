@@ -120,6 +120,7 @@ jobs:
           RS_UPDATE_API=http://127.0.0.1:8767/latest.json RADIOSCAN_DIR=u ./build/desktop/radioscan --update
           cmp u/radioscan rel/RadioScan/radioscan
           cmp u/launch.sh rel/RadioScan/launch.sh
+          cmp u/wav/README.txt rel/RadioScan/wav/README.txt   # files in the wav folder come along too
           test "$(cat u/VERSION)" = 9.9.9
           test "$(cat u/stations.txt)" = 'Mine|http://example.com/mine|music'   # the user's stations are kept
           ! ls u/*.new 2>/dev/null
