@@ -404,11 +404,21 @@ int update_unzip(const unsigned char *zip, long len, const char *dir, char *err,
 
         const char *rel = name + strlen(ZIP_DIR);
         if (strncmp(name, ZIP_DIR, strlen(ZIP_DIR)) || !*rel || name[nlen - 1] == '/') continue; /* folders */
-        if (strstr(rel, "..") || strchr(rel, '/') || strchr(rel, '\\')) continue;                 /* the app is flat */
+        /* the app is flat apart from one level of folders (wav/) */
+        const char *slash = strchr(rel, '/');
+        if (strstr(rel, "..") || strchr(rel, '\\') || slash == rel || (slash && strchr(slash + 1, '/'))) continue;
         char path[1300], tmp[1310];
-        snprintf(path, sizeof path, "%s/%s", dir, rel);
+        if (snprintf(path, sizeof path, "%s/%s", dir, rel) >= (int)sizeof path) { snprintf(err, errlen, "the app folder's path is too long"); goto out; }
         if (keep_users(rel, path)) continue;
         if (nfiles == MAX_FILES) { snprintf(err, errlen, "the zip has too many files"); goto out; }
+        if (slash) { /* make the folder; an empty one left behind by a failed update does no harm */
+            char sub[1300];
+            snprintf(sub, sizeof sub, "%.*s", (int)(strlen(path) - strlen(slash)), path);
+            if (mkdir(sub, 0755) && errno != EEXIST) {
+                snprintf(err, errlen, "couldn't make %.*s (%s)", (int)(slash - rel), rel, strerror(errno));
+                goto out;
+            }
+        }
 
         if (lho + 30 > (u64)len || rd32(zip + lho) != 0x04034b50UL) { snprintf(err, errlen, "the zip is damaged"); goto out; }
         u64 data = lho + 30 + rd16(zip + lho + 26) + rd16(zip + lho + 28);
@@ -419,7 +429,7 @@ int update_unzip(const unsigned char *zip, long len, const char *dir, char *err,
                 : method == 8 ? inflate_raw(zip + data, (long)csize, buf, (long)usize)
                               : -1;
         if (!bad && crc32(buf, (long)usize) != crc) bad = -1;
-        snprintf(tmp, sizeof tmp, "%s.new", path);
+        snprintf(tmp, sizeof tmp, "%s.new", path); /* fits: tmp is 10 bytes longer than path */
         if (bad) { free(buf); snprintf(err, errlen, "couldn't unpack %s", rel); goto out; }
         if (write_file(tmp, buf, (long)usize)) {
             free(buf);
@@ -434,7 +444,7 @@ int update_unzip(const unsigned char *zip, long len, const char *dir, char *err,
     if (!have_bin) { snprintf(err, errlen, "the zip has no RadioScan/radioscan"); goto out; }
     for (int i = 0; i < nfiles; i++) {
         char path[1300], tmp[1310];
-        snprintf(path, sizeof path, "%s/%s", dir, names[i]);
+        if (snprintf(path, sizeof path, "%s/%s", dir, names[i]) >= (int)sizeof path) continue; /* can't happen: checked above */
         snprintf(tmp, sizeof tmp, "%s.new", path);
         chmod(tmp, !strcmp(names[i], "radioscan") || strstr(names[i], ".sh") ? 0755 : 0644);
         if (rename(tmp, path)) {
@@ -448,8 +458,7 @@ out:
     for (int i = 0; i < nfiles; i++) {
         if (!names[i][0]) continue;
         char tmp[1310];
-        snprintf(tmp, sizeof tmp, "%s/%s.new", dir, names[i]);
-        unlink(tmp);
+        if (snprintf(tmp, sizeof tmp, "%s/%s.new", dir, names[i]) < (int)sizeof tmp) unlink(tmp);
     }
     return rc;
 }
