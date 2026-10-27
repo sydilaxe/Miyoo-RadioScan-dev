@@ -1,7 +1,7 @@
 # RadioScan
 
-A rhythm instrument for the **Miyoo Mini Plus** (OnionOS) played with **internet radio**.
-Two stations become two voices. Each voice is opened and closed by its own Euclidean rhythm, the two can
+A rhythm instrument for the **Miyoo Mini Plus** (OnionOS) played with **internet radio** (or your own
+**.wav files**). Two stations become two voices. Each voice is opened and closed by its own Euclidean rhythm, the two can
 cross-modulate each other (vocode, FM, ring mod, spectral morph), and the result runs through a filter,
 a wavefolder, echo and space.
 
@@ -81,6 +81,14 @@ a wavefolder, echo and space.
      random, then audition results on either voice and save them (RADIO page, **R2**).
 
   HTTPS works through a built-in mbedTLS, along with ICY song titles, redirects and `.pls` / `.m3u` playlists.
+- **WAV files.** A `.wav` file can stand in for a radio station on either voice. Copy files into the app's `wav`
+  folder (`App/RadioScan/wav/`) and they join the station list the next time RadioScan starts, named after the file
+  (kind: sound). Pick one on the RADIO page with A or B like any station; a voice can play a station and the other a
+  file, or both files. A file plays looped and goes through the same engines, rhythms, cross-modulation and effects,
+  and radio scan can land on it. Files elsewhere on the card can be listed in `stations.txt` as `file://wav/name.wav`
+  (relative to the app folder) or `file:///mnt/SDCARD/path/name.wav` (absolute), or typed on the keyboard (Y).
+  PCM 8/16/24/32-bit and 32/64-bit float at any sample rate, mono or stereo, are supported (compressed WAVs are not).
+  The file is read from the card as it plays, so long files are fine.
 
 ## The screen
 
@@ -335,6 +343,7 @@ and publishes a GitHub Release with `RadioScan.zip` attached (notes come from `.
 
 `tools/fake_icecast.py` generates a speech-like and a music-like MP3 stream and serves them the way Icecast
 does: ICY metadata, a redirect, a `.pls` playlist, a fake directory, and optional HTTPS with a throwaway CA.
+`tools/gen_wav.py` writes test `.wav` files in each supported encoding.
 `radioscan --render <seconds> <out.wav> [param=value ...]` runs both streams through the synth offline.
 It reports level, the voice/music verdict for each stream, and DSP cost.
 
@@ -401,7 +410,7 @@ itself never touches the SD card on a button press.
 
 ## Limitations
 
-- MP3 streams only. AAC, Ogg/Opus and HLS (`.m3u8`) stations are skipped or reported as unsupported. The
+- MP3 streams only (plus local `.wav` files). AAC, Ogg/Opus and HLS (`.m3u8`) stations are skipped or reported as unsupported. The
   directory scan only lists MP3 stations.
 - Station URLs change over time. If a preset stops working, remove it (X twice on the RADIO page) or scan for
   a replacement.

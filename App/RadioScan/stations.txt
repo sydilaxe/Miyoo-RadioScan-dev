@@ -1,6 +1,8 @@
 # RadioScan stations: one per line as  Name|URL|category
 # category is voice (talk, news, spoken word), music, or sound (drones, space, nature, scanners).
 # MP3 streams over http:// or https://; .pls and .m3u playlist links also work.
+# A .wav file plays (looped) like a station: file://wav/name.wav is in the app folder, file:///path is absolute.
+# .wav files put in the app's wav folder are added here by themselves.
 # Edit this file on the SD card, or add stations in the app (RADIO page: Y = type URL, R2 = scan directory).
 
 # ---- voices ----

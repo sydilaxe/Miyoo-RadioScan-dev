@@ -93,6 +93,22 @@ jobs:
           RS_FAST=1 RADIOSCAN_DIR=t ./build/desktop/radioscan --render 2 t/clock24.wav output=1 bpm=120 clock_ppqn=5 clock_side=1 2>/dev/null
           python3 tools/clockcheck.py t/clock24.wav left | tee t/clock24.txt
           grep -q "clock out on the left: 96 pulses, mean gap 20.83 ms, .* other values 0" t/clock24.txt
+      - name: WAV file voices (24-bit mono from the wav folder, float stereo by absolute path, a bad file)
+        run: |
+          mkdir -p w/wav
+          python3 tools/gen_wav.py w/wav/tone.wav 22050 1 pcm24 220 1.5
+          python3 tools/gen_wav.py w/float.wav 44100 2 float32 330 0.7
+          echo junk > w/bad.wav
+          # on a first run voice A takes the first station and voice B the second (the file found in w/wav)
+          printf 'Float|file://%s/w/float.wav|music\n' "$PWD" > w/stations.txt
+          RS_FAST=1 RADIOSCAN_DIR=w ./build/desktop/radioscan --render 3 w/out.wav 2>&1 | tee w/log.txt
+          grep -q "added 1 .wav file" w/log.txt
+          grep -q "tone|file://wav/tone.wav|sound" w/stations.txt
+          grep -q "OSC A: Playing file (44100 Hz" w/log.txt
+          grep -q "OSC B: Playing file (22050 Hz" w/log.txt
+          grep -Eq "rendered .*peak (0\.[1-9]|1)" w/log.txt
+          printf 'Bad|file://bad.wav\n' > w/stations.txt && rm -rf w/wav
+          RS_FAST=1 RADIOSCAN_DIR=w ./build/desktop/radioscan --render 0.2 w/out.wav 2>&1 | grep -q "OSC A: Not a WAV file"
       - name: Self-update test against a local fake GitHub
         run: |
           mkdir -p rel/RadioScan && cp -r App/RadioScan/. rel/RadioScan/ && cp build/desktop/radioscan rel/RadioScan/

@@ -6,6 +6,7 @@
 #include "dsp.h"
 
 #include <ctype.h>
+#include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,6 +19,19 @@ static void trim(char *s)
     if (p != s) memmove(s, p, strlen(p) + 1);
     size_t n = strlen(s);
     while (n && isspace((unsigned char)s[n - 1])) s[--n] = 0;
+}
+
+void station_default_name(const char *url, char *out, int n)
+{
+    if (!strncasecmp(url, "file://", 7)) { /* the file's name without its folder or extension */
+        const char *b = strrchr(url + 7, '/');
+        b = b ? b + 1 : url + 7;
+        const char *dot = strrchr(b, '.');
+        snprintf(out, n, "%.*s", dot && dot > b ? (int)(dot - b) : (int)strlen(b), b);
+        return;
+    }
+    const char *host = strstr(url, "://");
+    snprintf(out, n, "%.80s", host ? host + 3 : url);
 }
 
 int stations_load(StationList *l, const char *path)
@@ -36,11 +50,11 @@ int stations_load(StationList *l, const char *path)
         char *bar2 = strchr(url, '|');
         if (bar2) { *bar2 = 0; cat = bar2 + 1; }
         trim(url);
-        if (strncasecmp(url, "http://", 7) && strncasecmp(url, "https://", 8)) continue;
+        if (strncasecmp(url, "http://", 7) && strncasecmp(url, "https://", 8) && strncasecmp(url, "file://", 7)) continue;
         Station *s = &l->items[l->count++];
         memset(s, 0, sizeof *s);
         if (name) { trim(name); snprintf(s->name, sizeof s->name, "%s", name); }
-        if (!s->name[0]) snprintf(s->name, sizeof s->name, "%.80s", url + (url[4] == 's' ? 8 : 7));
+        if (!s->name[0]) station_default_name(url, s->name, sizeof s->name);
         snprintf(s->url, sizeof s->url, "%s", url);
         s->cat = cat ? category_from_text(cat) : CAT_ANY;
     }
@@ -57,6 +71,8 @@ int stations_save(const StationList *l, const char *path)
     fprintf(f, "# RadioScan stations: one per line as  Name|URL|category\n"
                "# category is voice (talk, news, spoken word), music, or sound (nature, drones, scanners).\n"
                "# MP3 streams over http:// or https://; .pls and .m3u playlist links also work.\n"
+               "# A .wav file plays (looped) like a station: file://wav/name.wav is in the app folder, file:///path is absolute.\n"
+               "# .wav files put in the app's wav folder are added here by themselves.\n"
                "# Edit this file on the SD card, or add stations in the app (RADIO page: Y = type URL, R2 = scan).\n\n");
     static const char *const cn[] = {"", "voice", "music", "sound"};
     for (int i = 0; i < l->count; i++)
@@ -103,6 +119,35 @@ void stations_remove(StationList *l, int idx)
     if (idx < 0 || idx >= l->count) return;
     memmove(&l->items[idx], &l->items[idx + 1], sizeof(Station) * (l->count - idx - 1));
     l->count--;
+}
+
+static int name_cmp(const void *a, const void *b) { return strcasecmp(*(char *const *)a, *(char *const *)b); }
+
+int stations_add_wav_folder(StationList *l, const char *dir, const char *url_prefix)
+{
+    DIR *d = opendir(dir);
+    if (!d) return 0;
+    char *names[MAX_STATIONS];
+    int n = 0;
+    struct dirent *e;
+    while ((e = readdir(d)) && n < MAX_STATIONS) {
+        size_t len = strlen(e->d_name);
+        if (e->d_name[0] == '.' || len < 5 || strcasecmp(e->d_name + len - 4, ".wav")) continue; /* skips ._ files too */
+        names[n] = strdup(e->d_name);
+        if (names[n]) n++;
+    }
+    closedir(d);
+    qsort(names, n, sizeof *names, name_cmp);
+    int added = 0;
+    for (int i = 0; i < n; i++) {
+        char url[512], name[96];
+        snprintf(url, sizeof url, "file://%s/%s", url_prefix, names[i]);
+        free(names[i]);
+        if (stations_find_url(l, url) >= 0) continue;
+        station_default_name(url, name, sizeof name);
+        if (stations_add(l, name, url, CAT_SOUND) >= 0) added++;
+    }
+    return added;
 }
 
 /* ------------------------------------------------------------ directory */
