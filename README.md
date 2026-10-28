@@ -333,9 +333,10 @@ Keyboard on desktop, matching the Miyoo's key codes:
 
 ### Releasing
 
-First set `RS_VERSION` in `src/update.h` to the new version: the app compares it with the release tag to decide
-whether it's out of date, so the release job refuses a tag that doesn't match. Then any of these builds, tests
-and publishes a GitHub Release with `RadioScan.zip` attached (notes come from `.github/release-notes.md`):
+Any of these builds, tests and publishes a GitHub Release with `RadioScan.zip` attached (notes come from
+`.github/release-notes.md`). The release is built as the version in its tag (`make VERSION=0.2.0`), which the app
+compares with newer release tags, so there's no need to bump the source first. The tag must look like `v1.2.3`.
+`RS_VERSION` in `src/update.h` is only the version of untagged builds; keep it at the latest release.
 
 - **Actions → build → Run workflow**, with a tag such as `v0.2.0` filled in.
 - Push a version tag: `git tag v0.2.0 && git push origin v0.2.0`.

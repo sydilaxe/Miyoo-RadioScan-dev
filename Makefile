@@ -3,7 +3,8 @@
 #   make miyoo           cross build for Miyoo Mini / Mini Plus  -> build/miyoo/radioscan
 #   make package         miyoo build + dist/RadioScan.zip ready to unzip onto the SD card
 #   make install SD=/path/to/card   copy the packaged app onto a mounted OnionOS card
-#   make version         print the version (RS_VERSION in src/update.h); releases are tagged v<version>
+#   make version         print the version: RS_VERSION in src/update.h, or VERSION=x.y.z when given
+#                        (CI passes the release tag's version, so a release is built as v<tag>)
 #
 # For `make miyoo`, use the OnionOS / union-miyoomini toolchain (see README), or set CROSS and SYSROOT.
 
@@ -19,7 +20,7 @@ OBJ      := $(patsubst src/%.c,$(BUILD)/%.o,$(SRC))
 VERSION  := $(shell sed -n 's/^\#define RS_VERSION "\([^"]*\)".*/\1/p' src/update.h)
 
 CFLAGS   ?= -O2
-CFLAGS   += -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -I$(MBED_DIR)/include
+CFLAGS   += -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -I$(MBED_DIR)/include -DRS_VERSION='"$(VERSION)"'
 MBED_CFLAGS := -O2 -I$(MBED_DIR)/include -I$(MBED_DIR)/library
 
 ifeq ($(TARGET),miyoo)
