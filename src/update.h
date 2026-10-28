@@ -5,7 +5,11 @@
 
 #include <stddef.h>
 
-#define RS_VERSION "0.8.2" /* keep in step with the release tag (v0.8.1); CI refuses to publish a mismatch */
+/* the version for untagged builds; a release build gets its version from the release tag
+ * (make VERSION=x.y.z, which passes -DRS_VERSION). The app offers any newer release. */
+#ifndef RS_VERSION
+#define RS_VERSION "0.8.2"
+#endif
 #define RS_REPO "sydilaxe/RadioScan"
 
 /* exit status that tells launch.sh to start the app again (the new version) */
