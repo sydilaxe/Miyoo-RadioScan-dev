@@ -270,7 +270,9 @@ Set it under **RHYTHM → CLOCK → Wi-Fi Sync**:
 | OFF | Runs alone and sends nothing |
 
 The leader sets the tempo; tap tempo on the leader and every follower jumps to the new downbeat. Followers
-nudge their clock speed by up to 3% to stay in phase, typically within a few milliseconds. Sync moves RadioScan's
+nudge their clock speed by up to 3% to stay in phase. They line up what is heard, to within a millisecond or so:
+each packet carries the time it was sent, so Wi-Fi delays and slow screen frames don't count, and units echo each
+other's packets to time the trip. Older units of the sibling apps still sync, a few milliseconds less closely. Sync moves RadioScan's
 two rhythms and the echo time; the radio streams themselves just keep playing. If the leader stops its
 transport, followers hold their rhythms too.
 
@@ -367,6 +369,8 @@ performance CPU governor, and keeps the device awake. It has a few optional swit
 
 - `RS_BUFFER`: audio buffer size in frames, 2048 by default (about 43 ms; the Miyoo's driver keeps two of them).
   1024 responds faster if the sound never drops out.
+- `RS_SYNC_LATENCY`: the frames the sound driver holds before they're heard (`RS_BUFFER` by default). Change it
+  only if Wi-Fi sync sounds early or late against another app.
 - `RS_RATE`: engine rate (48000 by default, the hardware's native rate; 32000 is lighter on the CPU).
 - `RS_ROTATE180`: the picture is turned 180° for the Mini Plus panel by default; set it to 0 if your screen
   shows it upside down.

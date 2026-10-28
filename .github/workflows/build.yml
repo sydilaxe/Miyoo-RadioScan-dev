@@ -133,3 +133,5 @@ jobs:
           cat lead.txt
           grep -q "following 1" follow.txt
           grep -q "bpm 97.0" follow.txt
+      - name: Wi-Fi sync timing (a simulated slow network)
+        run: ./build/desktop/radioscan --syncsim

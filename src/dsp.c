@@ -640,6 +640,7 @@ void synth_set_position(Synth *s, double steps) { s->beat_pos = steps < 0 ? 0 : 
 void synth_set_clock_rate(Synth *s, double r) { s->clock_rate = r < 0.9 ? 0.9 : r > 1.1 ? 1.1 : r; }
 void synth_set_running(Synth *s, int on) { s->running = on; }
 int synth_running(const Synth *s) { return s->running; }
+double synth_steps_per_frame(const Synth *s) { return s->running ? s->p[P_BPM] / 15.0 / s->fs * s->clock_rate : 0.0; }
 
 /* ------------------------------------------------------------------ dice */
 
