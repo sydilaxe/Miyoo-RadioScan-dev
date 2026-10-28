@@ -120,6 +120,7 @@ float synth_beat_phase(const Synth *s);
 double synth_position(const Synth *s);                 /* 16th notes since the downbeat */
 void synth_set_position(Synth *s, double steps);
 void synth_set_clock_rate(Synth *s, double rate);      /* 0.9 .. 1.1 speed trim */
+double synth_steps_per_frame(const Synth *s);          /* how far the position moves each frame */
 void synth_set_running(Synth *s, int on);
 int synth_running(const Synth *s);
 
