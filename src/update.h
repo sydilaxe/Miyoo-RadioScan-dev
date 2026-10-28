@@ -5,7 +5,7 @@
 
 #include <stddef.h>
 
-#define RS_VERSION "0.8.1" /* keep in step with the release tag (v0.8.1); CI refuses to publish a mismatch */
+#define RS_VERSION "0.8.2" /* keep in step with the release tag (v0.8.1); CI refuses to publish a mismatch */
 #define RS_REPO "sydilaxe/RadioScan"
 
 /* exit status that tells launch.sh to start the app again (the new version) */
@@ -25,7 +25,7 @@ enum {
 typedef struct {
     volatile int state;
     volatile int progress;
-    char latest[32]; /* "0.8.1" */
+    char latest[32]; /* "0.8.2" */
     char url[1024];  /* the release's RadioScan.zip */
     char err[160];
 } UpdateStatus;
@@ -38,7 +38,7 @@ void update_install_start(const char *app_dir); /* from AVAILABLE; state goes IN
 int update_check(void);
 int update_install(const char *app_dir);
 
-/* true if dotted version a ("v0.8.1" or "0.8.1") is newer than b */
+/* true if dotted version a ("v0.8.2" or "0.8.2") is newer than b */
 int version_newer(const char *a, const char *b);
 /* unpack the RadioScan/ folder of a zip into dir, keeping the user's files; 0 on success */
 int update_unzip(const unsigned char *zip, long len, const char *dir, char *err, size_t errlen);
