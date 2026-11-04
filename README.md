@@ -7,6 +7,8 @@ a wavefolder, echo and space.
 
 ![play screen](docs/play.png)
 
+**Latest release:** [v0.8.2](../../releases/tag/v0.8.2) · [all releases](../../releases)
+
 ## How it works
 
 - **Two radio voices.** Each voice plays one station with one of four engines:
@@ -334,11 +336,11 @@ Keyboard on desktop, matching the Miyoo's key codes:
 ### Releasing
 
 Any of these builds, tests and publishes a GitHub Release with `RadioScan.zip` attached (notes come from
-`.github/release-notes.md`). The release is built as the version in its tag (`make VERSION=0.2.0`), which the app
+`.github/release-notes.md`). The release is built as the version in its tag (`make VERSION=1.2.3`), which the app
 compares with newer release tags, so there's no need to bump the source first. The tag must look like `v1.2.3`.
-`RS_VERSION` in `src/update.h` is only the version of untagged builds; keep it at the latest release.
+`RS_VERSION` in `src/update.h` is only the version of untagged builds; keep it, and the README's **Latest release** line, at the latest release (CI checks the two match).
 
-- **Actions → build → Run workflow**, with a tag such as `v0.2.0` filled in.
+- **Actions → build → Run workflow**, with a tag such as `v1.2.3` filled in.
 - Push a version tag: `git tag v0.2.0 && git push origin v0.2.0`.
 - Create a release on the GitHub website; the zip is added to it automatically.
 
